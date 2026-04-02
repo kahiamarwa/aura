@@ -36,3 +36,12 @@ openwake/*.onnx
 
 # Supabase local CLI cache
 supabase/.temp/
+
+# Docs / specs (keep local only)
+AURA_Audio_Pipeline_Spec.md
+AURA_POC_Spec_v2_ElevenLabs.md
+HARDWARE_PROTOTYPE.md
+PLAN_OPENWAKEWORD_INTEGRATION.md
+elevenlabs-doc*.md
+integrations-marwa/
+test_ppt.py
