@@ -1015,11 +1015,10 @@ export const AGENT_TOOLS = [
   {
     name: "create_report",
     description:
-      "Crée un rapport/document PDF structuré et professionnel (niveau artifacts Claude). " +
+      "Crée un rapport/document PDF professionnel via HTML+CSS (rendu Gotenberg/Chromium). " +
       "Utilise ce tool quand l'utilisateur demande un rapport, document, compte-rendu, " +
       "analyse, mémo, brief technique, convention, ou PDF structuré (PAS une présentation/slides). " +
-      "Supporte des templates avancés (executive, modern, creative), des couleurs dynamiques, " +
-      "des types de documents pré-structurés, et le logo utilisateur. " +
+      "Génère le HTML complet dans html_content pour un rendu parfait. " +
       "Pour l'envoyer par email, appelle ensuite send_email_with_attachment.",
     input_schema: {
       type: "object" as const,
@@ -1095,6 +1094,15 @@ export const AGENT_TOOLS = [
           description:
             "Référence du document affichée sur la couverture (ex: 'RI-2026-0323-SERDOUN', 'BT-2026-0325-PROJET'). " +
             "Génère un code pertinent basé sur le type de document, la date et le contexte.",
+        },
+        html_content: {
+          type: "string",
+          description:
+            "HTML complet du rapport (<html><head><style>...</style></head><body>...</body></html>). " +
+            "Si fourni, le PDF est généré via Gotenberg (Chromium) pour un rendu parfait. " +
+            "Utilise CSS inline, @page { size: A4; margin: 0; }, police Segoe UI/Arial. " +
+            "Pour le logo utilisateur, utilise <img src=\"{{LOGO_URL}}\" /> — le proxy remplacera automatiquement. " +
+            "Si html_content est fourni, sections[] n'est pas nécessaire.",
         },
         sections: {
           type: "array",
@@ -1195,7 +1203,7 @@ export const AGENT_TOOLS = [
           },
         },
       },
-      required: ["title", "sections"],
+      required: ["title"],
     },
   },
   {

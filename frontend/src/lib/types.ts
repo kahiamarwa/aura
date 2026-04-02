@@ -12,4 +12,6 @@ export interface ConversationEntry {
   command: string;
   response: string;
   attachments?: Attachment[];
+  isStreaming?: boolean;
+  toolInProgress?: string;
 }

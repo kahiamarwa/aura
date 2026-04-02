@@ -17,6 +17,7 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const PPTX_SERVER_URL = Deno.env.get("PPTX_MCP_SERVER_URL") || Deno.env.get("PPTX_SERVER_URL") || "http://localhost:8200";
 const PPTX_API_KEY = Deno.env.get("PPTX_API_KEY") || "aura-pptx-secret-key";
+const GOTENBERG_URL = Deno.env.get("GOTENBERG_URL") || "https://u2bp2irgwt.eu-west-3.awsapprunner.com";
 
 // ─── Auth helper (inlined) ──────────────────────────────────
 async function getUserFromRequest(
@@ -152,6 +153,36 @@ async function convertToPdf(pptxBase64: string): Promise<{ base64_data: string; 
   return await response.json();
 }
 
+// ─── Generate PDF from HTML via Gotenberg (Chromium) ────────
+async function generateReportFromHtml(htmlContent: string): Promise<Uint8Array> {
+  const url = `${GOTENBERG_URL}/forms/chromium/convert/html`;
+  console.log(`[pptx-proxy] POST ${url} (Gotenberg HTML→PDF)`);
+
+  const formData = new FormData();
+  const htmlBlob = new Blob([htmlContent], { type: "text/html" });
+  formData.append("files", htmlBlob, "index.html");
+  // Zero margins — let the HTML control layout via @page CSS
+  formData.append("marginTop", "0");
+  formData.append("marginBottom", "0");
+  formData.append("marginLeft", "0");
+  formData.append("marginRight", "0");
+  formData.append("preferCssPageSize", "true");
+
+  const response = await fetch(url, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Gotenberg error (${response.status}): ${errText.substring(0, 200)}`);
+  }
+
+  // Gotenberg returns raw PDF bytes
+  const pdfBuffer = await response.arrayBuffer();
+  return new Uint8Array(pdfBuffer);
+}
+
 // ─── Main handler ───────────────────────────────────────────
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -176,13 +207,13 @@ Deno.serve(async (req) => {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const fileId = crypto.randomUUID();
 
-    // ─── Report path (sections → PDF natif) ───────────────────
+    // ─── Report path ────────────────────────────────────────────
     if (isReport) {
-      console.log(
-        `[pptx-proxy] Création rapport: "${body.title}" (${body.sections.length} sections)`
-      );
+      let pdfData: Uint8Array;
+      let pagesCount = 0;
 
-      // Inject user logo URL if available and not explicitly excluded
+      // ── Inject logo URL (shared by both paths) ──
+      let logoUrl: string | null = null;
       if (body.include_logo !== false) {
         try {
           const { data: settings } = await supabase
@@ -193,10 +224,10 @@ Deno.serve(async (req) => {
           if (settings?.logo_path) {
             const { data: signedUrl } = await supabase.storage
               .from("logos")
-              .createSignedUrl(settings.logo_path, 300); // 5 min
+              .createSignedUrl(settings.logo_path, 300);
             if (signedUrl?.signedUrl) {
-              body.logo_url = signedUrl.signedUrl;
-              console.log(`[pptx-proxy] Logo URL injected for user ${userId}`);
+              logoUrl = signedUrl.signedUrl;
+              console.log(`[pptx-proxy] Logo URL obtained for user ${userId}`);
             }
           }
         } catch (logoErr) {
@@ -204,15 +235,44 @@ Deno.serve(async (req) => {
         }
       }
 
-      const reportResult = await generateReport(body);
-      const pdfData = base64ToBytes(reportResult.base64_data);
-      console.log(`[pptx-proxy] PDF rapport généré: ${pdfData.length} bytes, ${reportResult.pages_count} pages`);
+      if (body.html_content) {
+        // ── Gotenberg path: HTML → PDF (Chromium) ──
+        console.log(`[pptx-proxy] HTML report via Gotenberg: "${body.title}"`);
 
+        // Replace {{LOGO_URL}} placeholder with actual signed URL
+        if (logoUrl) {
+          body.html_content = body.html_content.replace(/\{\{LOGO_URL\}\}/g, logoUrl);
+        } else {
+          // Remove logo img tags if no logo available
+          body.html_content = body.html_content.replace(
+            /<img[^>]*src=["']?\{\{LOGO_URL\}\}["']?[^>]*\/?>/g,
+            ""
+          );
+        }
+
+        pdfData = await generateReportFromHtml(body.html_content);
+        console.log(`[pptx-proxy] Gotenberg PDF generated: ${pdfData.length} bytes`);
+      } else {
+        // ── Legacy path: JSON sections → Python/fpdf2 ──
+        console.log(
+          `[pptx-proxy] Legacy report: "${body.title}" (${body.sections.length} sections)`
+        );
+        if (logoUrl) {
+          body.logo_url = logoUrl;
+        }
+
+        const reportResult = await generateReport(body);
+        pdfData = base64ToBytes(reportResult.base64_data);
+        pagesCount = reportResult.pages_count;
+        console.log(`[pptx-proxy] fpdf2 PDF: ${pdfData.length} bytes, ${pagesCount} pages`);
+      }
+
+      // ── Upload to Storage (shared) ──
       const storagePath = `${userId}/${fileId}.pdf`;
-      const displayName = reportResult.file_name || (body.title
+      const displayName = body.title
         .replace(/[^a-zA-Z0-9àâäéèêëïîôùûüçÀÂÄÉÈÊËÏÎÔÙÛÜÇ\s-]/g, "")
         .replace(/\s+/g, "_")
-        .substring(0, 50) + ".pdf");
+        .substring(0, 50) + ".pdf";
 
       const { error: uploadError } = await supabase.storage
         .from("presentations")
@@ -231,7 +291,7 @@ Deno.serve(async (req) => {
         success: true,
         file_path: storagePath,
         file_name: displayName,
-        pages_count: reportResult.pages_count,
+        pages_count: pagesCount,
         size_bytes: pdfData.length,
       });
     }

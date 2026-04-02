@@ -256,3 +256,11 @@ html.dark .glass-card-hover:hover {
 .msg-in {
   animation: msgIn 0.3s ease-out forwards;
 }
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

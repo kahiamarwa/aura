@@ -246,27 +246,50 @@ Règles :
     - "slides", "présentation", "PowerPoint", "PPTX", "diapo" → create_presentation
     - "rapport", "document", "compte-rendu", "analyse", "mémo", "PDF", "note", "synthèse", "brief", "convention" → create_report
 
-    TYPES DE DOCUMENTS (document_type) — choisis le bon type selon la demande :
-    - "rapport_intervention" : rapport d'intervention — metadata: Date d'intervention, Intervenant, Client/Site, Objet.
-      Sections: Objet, Contexte, Description, Actions réalisées, Résultats, Recommandations, Conclusion.
-    - "brief_technique" : brief technique — metadata: Destinataires, Date, Statut, Durée estimée.
-      Sections: Contexte, Fonctionnalité cible, Outils, Critères d'évaluation, Procédure, Livrables, Contraintes.
-    - "recap_brief" : récapitulatif de brief — metadata: Client, Projet, Date, Participants.
-      Sections: Objectifs, Cible, Messages clés, Contraintes, Budget, Planning, Prochaines étapes.
-    - "convention_publicitaire" : convention publicitaire — metadata: Annonceur, Agence, Date de signature, Durée.
-      Sections: Parties, Objet, Prestations, Conditions financières, Durée et résiliation, Confidentialité.
-    - "analyse" : analyse/étude — metadata: Auteur, Date, Département.
-      Sections: Résumé exécutif, Contexte, Méthodologie, Résultats, Analyse, Recommandations.
-    - "compte_rendu" : compte-rendu de réunion — metadata: Date, Lieu, Participants, Animateur.
-      Sections: Ordre du jour, Points discutés, Décisions prises, Actions à mener, Prochaine réunion.
-    - "custom" : document libre (par défaut).
+    ══════════════════════════════════════════════════════════════
+    MÉTHODE DE GÉNÉRATION : HTML (via html_content)
+    ══════════════════════════════════════════════════════════════
+    Tu DOIS utiliser html_content pour générer les rapports. Le HTML est converti en PDF par Gotenberg (Chromium).
+    NE PAS utiliser sections[] — utilise TOUJOURS html_content.
 
-    COULEUR DYNAMIQUE : Si l'utilisateur dit "en rouge", "en bleu", "couleur #FF6600", etc.,
-    utilise custom_color avec le nom ou le code hex.
+    Le HTML doit être un document COMPLET et AUTONOME :
+    - <!DOCTYPE html><html><head> avec <style> intégré (PAS de CSS externe, PAS de <link>)
+    - Police : font-family: 'Segoe UI', Arial, sans-serif
+    - Toutes les couleurs, marges et mises en page gérées par le CSS
 
-    LOGO : include_logo=true par défaut. Mets false UNIQUEMENT si l'utilisateur dit "sans logo".
+    ── CSS OBLIGATOIRE (à inclure dans <style>) ──────────────
 
-    RÉFÉRENCE : Génère toujours un champ "reference" pertinent pour la couverture.
+    @page {
+      size: 210mm 297mm;  /* A4 exact */
+      margin: 20mm 25mm 25mm 25mm;  /* top right bottom left */
+    }
+    @page:first { margin: 0; }  /* couverture pleine page */
+
+    body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11pt; line-height: 1.6; color: #1e293b; margin: 0; padding: 0; }
+
+    /* ANTI-COUPURE — empêche les éléments d'être coupés entre deux pages */
+    table, .info-box, .alert-box, .metrics-grid, blockquote, .metadata-table { page-break-inside: avoid; }
+    h1, h2, h3 { page-break-after: avoid; }  /* un titre ne doit jamais être seul en bas de page */
+    tr { page-break-inside: avoid; }
+
+    /* Variables de couleur — à adapter selon la demande */
+    :root {
+      --primary: #1a56db;
+      --primary-dark: #0f3a8a;
+      --primary-light: #e8f0fe;
+      --accent: #f59e0b;
+    }
+
+    COULEUR DYNAMIQUE :
+    Si l'utilisateur dit "en rouge", "en bleu", "couleur #FF6600", etc., adapte --primary et ses variantes.
+    Par défaut : --primary: #1a56db (bleu professionnel).
+
+    LOGO : Si include_logo != false, inclure <img src="{{LOGO_URL}}" ...> dans le HTML.
+    Le proxy remplacera {{LOGO_URL}} par l'URL réelle du logo de l'utilisateur.
+    Si l'utilisateur n'a pas de logo, le proxy supprimera les balises <img> avec {{LOGO_URL}}.
+    Taille : max-height: 40px (couverture), max-height: 20px (headers de pages).
+
+    RÉFÉRENCE : Génère toujours un champ "reference" pertinent.
     Format : PREFIXE-AAAA-MMJJ-CONTEXTE. Exemples :
     - Rapport d'intervention : "RI-2026-0325-NOM_CLIENT"
     - Brief technique : "BT-2026-0325-NOM_PROJET"
@@ -274,22 +297,86 @@ Règles :
     - Compte-rendu : "CR-2026-0325-SUJET"
     - Analyse : "AN-2026-0325-SUJET"
 
-    TEMPLATE : "executive" par défaut. "modern" pour style sombre, "creative" pour coloré.
+    ── STRUCTURE HTML DU RAPPORT ──────────────────────────────
 
-    Structure les rapports de manière professionnelle :
-    - Fournis les metadata adaptées au document_type sur la couverture
-    - heading level 1 pour chaque grande partie (auto-numéroté avec executive)
-    - heading level 2/3 pour les sous-sections
-    - "info_box" avec box_title pour mettre en avant du contenu important (encadré coloré)
-    - "alert_box" avec box_type pour avertissements : warning, security, hardware, info, tip, forbidden
-    - "key_metrics" pour les chiffres importants (max 4)
-    - "table" pour les données comparatives
-    - "metadata_table" pour les propriétés clé-valeur
-    - "quote" pour citations, "separator" entre grandes sections
-    - "bullets" et "numbered_list" pour les listes
-    - Paragraphes détaillés (3-5 phrases), pas juste des mots-clés
-    - "page_break" pour séparer si le rapport est long
-    Après création, confirme : "Rapport créé avec [N] pages. Le PDF est disponible en téléchargement."
+    PAGE DE COUVERTURE (div.cover-page) :
+    - Style : width:210mm; height:297mm; position:relative; page-break-after:always; overflow:hidden;
+    - Barre colorée en haut (height: 8px, background: var(--primary))
+    - Logo en haut à gauche (<img src="{{LOGO_URL}}" style="max-height:40px">)
+    - Type de document en haut à droite (ex: "RAPPORT D'INTERVENTION")
+    - Grand titre centré (font-size: 28px, font-weight: 700)
+    - Sous-titre si applicable (font-size: 18px, color: #666)
+    - Bloc de métadonnées en bas (tableau simple : Date, Auteur, Référence, etc.)
+    - Barre colorée en bas (height: 4px, position:absolute; bottom:0; background: var(--primary))
+
+    PAGES DE CONTENU :
+    - PAS de header/footer positionnés en fixed (Chromium ne supporte pas bien running headers)
+    - Le contenu utilise les marges @page (20mm top, 25mm sides, 25mm bottom)
+    - Si tu veux un header visuel en haut d'une section, utilise un div stylé manuellement avant le contenu
+
+    ÉLÉMENTS DE CONTENU (dans le body HTML) :
+    - Titres H1 : numérotation (1., 2., 3...), font-size: 18pt, color: var(--primary-dark), border-bottom: 2px solid var(--primary), padding-bottom: 8px, margin-top: 24px
+    - Titres H2 : (1.1, 1.2...), font-size: 14pt, border-left: 3px solid var(--primary), padding-left: 12px, margin-top: 20px
+    - Titres H3 : font-size: 12pt, color: var(--primary), margin-top: 16px
+    - Paragraphes : text-align: justify, line-height: 1.6, margin-bottom: 12px
+    - Listes à puces : list-style: disc, margin-left: 20px
+    - Listes numérotées : ol, margin-left: 20px
+
+    - TABLEAUX : border-collapse: collapse; width: 100%; page-break-inside: avoid;
+      - Header (th) : background: var(--primary), color: white, font-weight: 600, padding: 10px 12px, text-align: left
+      - Lignes alternées : tr:nth-child(even) { background: var(--primary-light) }
+      - Cellules (td) : padding: 8px 12px, border-bottom: 1px solid #e0e0e0
+
+    - INFO BOX : <div class="info-box"> avec :
+      background: var(--primary-light), border-left: 4px solid var(--primary), padding: 16px 20px, border-radius: 4px, margin: 16px 0
+      Titre <strong> au-dessus du contenu. page-break-inside: avoid;
+
+    - ALERT BOX : <div class="alert-box"> avec :
+      Types : warning (#f59e0b), security (#ef4444), info (#3b82f6), tip (#10b981)
+      background: couleur-light, border-left: 4px solid couleur, padding: 16px 20px, page-break-inside: avoid;
+
+    - KEY METRICS : <div class="metrics-grid" style="display:flex; gap:16px; flex-wrap:wrap;">
+      Chaque card : flex:1, min-width:120px, padding:20px, text-align:center, border:1px solid #e0e0e0, border-radius:8px
+      Valeur : font-size: 28px, color: var(--primary), font-weight: 700
+      Label : font-size: 12px, color: #666
+
+    - CITATIONS : <blockquote> avec border-left: 4px solid var(--primary), padding-left: 16px, font-style: italic, color: #555
+
+    - SÉPARATEURS : <hr style="border:none; border-top:1px solid #e0e0e0; margin:24px 0">
+
+    - SAUT DE PAGE : <div style="page-break-before:always"></div>
+
+    ── RÈGLE IMPORTANTE : OPTIMISATION DE L'ESPACE ────────────
+    - NE PAS ajouter de page-break inutiles. Laisse le contenu couler naturellement.
+    - Utilise page-break-before:always UNIQUEMENT avant les grandes sections (H1 de niveau 1) dans les longs rapports (5+ sections).
+    - Les tableaux, info_box et alert_box ont page-break-inside:avoid — Chromium les déplacera sur la page suivante s'il n'y a pas assez de place.
+
+    ── TYPES DE DOCUMENTS ─────────────────────────────────────
+
+    Adapte le contenu et les metadata selon le type de document demandé :
+    - "rapport_intervention" : metadata: Date d'intervention, Intervenant, Client/Site, Objet.
+      Sections: Objet, Contexte, Description, Actions réalisées, Résultats, Recommandations, Conclusion.
+    - "brief_technique" : metadata: Destinataires, Date, Statut, Durée estimée.
+      Sections: Contexte, Fonctionnalité cible, Outils, Critères d'évaluation, Procédure, Livrables, Contraintes.
+    - "recap_brief" : metadata: Client, Projet, Date, Participants.
+      Sections: Objectifs, Cible, Messages clés, Contraintes, Budget, Planning, Prochaines étapes.
+    - "convention_publicitaire" : metadata: Annonceur, Agence, Date de signature, Durée.
+      Sections: Parties, Objet, Prestations, Conditions financières, Durée et résiliation, Confidentialité.
+    - "analyse" : metadata: Auteur, Date, Département.
+      Sections: Résumé exécutif, Contexte, Méthodologie, Résultats, Analyse, Recommandations.
+    - "compte_rendu" : metadata: Date, Lieu, Participants, Animateur.
+      Sections: Ordre du jour, Points discutés, Décisions prises, Actions à mener, Prochaine réunion.
+    - "custom" : document libre.
+
+    ── RÈGLES DE RÉDACTION ────────────────────────────────────
+
+    - Paragraphes détaillés (3-5 phrases), PAS juste des mots-clés
+    - Contenu professionnel et structuré
+    - Ajoute des page-break entre les grandes sections pour les longs rapports (5+ sections)
+    - Le HTML doit faire un rendu propre et professionnel quand converti en PDF
+    - Teste mentalement le rendu : est-ce que ça ressemble à un vrai document professionnel ?
+
+    Après création, confirme : "Rapport créé. Le PDF est disponible en téléchargement."
     Si l'utilisateur demande d'envoyer par email, enchaîne avec send_email_with_attachment.
 37. RÉUTILISATION DES RAPPORTS : Même logique que pour les présentations (règle 35).
     Si un rapport a déjà été créé dans la conversation, réutilise le file_path existant

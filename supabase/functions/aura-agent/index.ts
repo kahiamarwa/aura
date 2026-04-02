@@ -27,7 +27,447 @@ import { executeCreatePresentation } from "./tools/presentation.ts";
 import { executeCreateReport } from "./tools/report.ts";
 
 // ═══════════════════════════════════════════════════════════════
-// BOUCLE AGENT (multi-tour)
+// SSE HELPERS
+// ═══════════════════════════════════════════════════════════════
+
+const encoder = new TextEncoder();
+
+function sseEvent(controller: ReadableStreamDefaultController, event: string, data: unknown) {
+  controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TOOL EXECUTOR (shared between streaming and non-streaming)
+// ═══════════════════════════════════════════════════════════════
+
+// deno-lint-ignore no-explicit-any
+async function executeTool(toolName: string, toolInput: any, supabase: any, userId: string, userJwt: string): Promise<{ text: string; summaryId?: string }> {
+  switch (toolName) {
+    case "get_recent_context":
+      return { text: await executeGetRecentContext(supabase, toolInput, userId) };
+    case "generate_summary":
+      return { text: await executeGenerateSummary(toolInput) };
+    case "save_summary": {
+      const r = await executeSaveSummary(supabase, toolInput, userId);
+      return { text: r.text, summaryId: r.id };
+    }
+    case "search_memory":
+      return { text: await executeSearchMemory(supabase, toolInput) };
+    case "send_email":
+      return { text: await executeSendEmail(toolInput, userJwt) };
+    case "list_emails":
+      return { text: await executeListEmails(toolInput, userJwt) };
+    case "read_email":
+      return { text: await executeReadEmail(toolInput, userJwt) };
+    case "search_contacts":
+      return { text: await executeSearchContacts(toolInput, userJwt) };
+    case "save_contact":
+      return { text: await executeSaveContact(toolInput, userJwt) };
+    case "add_meeting_note":
+      return { text: await executeAddMeetingNote(toolInput, userJwt) };
+    case "create_calendar_event":
+      return { text: await executeCreateCalendarEvent(toolInput, userJwt) };
+    case "list_calendar_events":
+      return { text: await executeListCalendarEvents(toolInput, userJwt) };
+    case "update_calendar_event":
+      return { text: await executeUpdateCalendarEvent(toolInput, userJwt) };
+    case "send_sms":
+      return { text: await executeSendSMS(toolInput, userJwt) };
+    case "send_whatsapp":
+      return { text: await executeSendWhatsApp(toolInput, userJwt) };
+    case "hubspot_search_contacts":
+      return { text: await executeHubspotSearchContacts(toolInput, userJwt) };
+    case "hubspot_create_contact":
+      return { text: await executeHubspotCreateContact(toolInput, userJwt) };
+    case "hubspot_update_contact":
+      return { text: await executeHubspotUpdateContact(toolInput, userJwt) };
+    case "hubspot_delete_contact":
+      return { text: await executeHubspotDeleteContact(toolInput, userJwt) };
+    case "hubspot_search_deals":
+      return { text: await executeHubspotSearchDeals(toolInput, userJwt) };
+    case "hubspot_create_deal":
+      return { text: await executeHubspotCreateDeal(toolInput, userJwt) };
+    case "hubspot_update_deal":
+      return { text: await executeHubspotUpdateDeal(toolInput, userJwt) };
+    case "hubspot_get_pipeline":
+      return { text: await executeHubspotGetPipeline(toolInput, userJwt) };
+    case "hubspot_get_notes":
+      return { text: await executeHubspotGetNotes(toolInput, userJwt) };
+    case "hubspot_create_note":
+      return { text: await executeHubspotCreateNote(toolInput, userJwt) };
+    case "hubspot_update_note":
+      return { text: await executeHubspotUpdateNote(toolInput, userJwt) };
+    case "slack_send_message":
+      return { text: await executeSlackSendMessage(toolInput, userJwt) };
+    case "slack_send_dm":
+      return { text: await executeSlackSendDm(toolInput, userJwt) };
+    case "slack_list_channels":
+      return { text: await executeSlackListChannels(toolInput, userJwt) };
+    case "slack_list_users":
+      return { text: await executeSlackListUsers(toolInput, userJwt) };
+    case "slack_get_channel_history":
+      return { text: await executeSlackGetChannelHistory(toolInput, userJwt) };
+    case "web_search":
+      return { text: await executeWebSearch(toolInput) };
+    case "datagouv_search":
+      return { text: await executeDatagouvSearch(toolInput) };
+    case "datagouv_get_dataset":
+      return { text: await executeDatagouvGetDataset(toolInput) };
+    case "datagouv_query_data":
+      return { text: await executeDatagouvQueryData(toolInput) };
+    case "datagouv_get_resource_info":
+      return { text: await executeDatagouvGetResourceInfo(toolInput) };
+    case "datagouv_get_metrics":
+      return { text: await executeDatagouvGetMetrics() };
+    case "datagouv_search_dataservices":
+      return { text: await executeDatagouvSearchDataservices(toolInput) };
+    case "create_presentation":
+      return { text: await executeCreatePresentation(toolInput, userJwt) };
+    case "create_report":
+      return { text: await executeCreateReport(toolInput, userJwt) };
+    case "send_email_with_attachment":
+      return { text: await executeSendEmailWithAttachment(toolInput, userJwt) };
+    default:
+      return { text: `Outil inconnu: ${toolName}` };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ATTACHMENT EXTRACTION (shared)
+// ═══════════════════════════════════════════════════════════════
+
+function extractAttachments(toolName: string, toolResult: string, attachments: AgentAttachment[]) {
+  if (toolResult.startsWith("Erreur")) return;
+
+  if (toolName === "create_presentation") {
+    const filePathMatch = toolResult.match(/Chemin PPTX \(file_path\): (.+)/);
+    const fileNameMatch = toolResult.match(/PPTX: (.+?) \(/);
+    if (filePathMatch && fileNameMatch) {
+      const att: AgentAttachment = {
+        file_path: filePathMatch[1].trim(),
+        file_name: fileNameMatch[1].trim(),
+        type: "presentation",
+      };
+      const pdfPathMatch = toolResult.match(/Chemin PDF \(pdf_file_path\): (.+)/);
+      const pdfNameMatch = toolResult.match(/PDF: (.+?) \(/);
+      if (pdfPathMatch) att.pdf_file_path = pdfPathMatch[1].trim();
+      if (pdfNameMatch) att.pdf_file_name = pdfNameMatch[1].trim();
+      attachments.push(att);
+    }
+  } else if (toolName === "create_report") {
+    const reportPathMatch = toolResult.match(/Chemin PDF \(file_path\): (.+)/);
+    const reportNameMatch = toolResult.match(/PDF: (.+?) \(/);
+    if (reportPathMatch && reportNameMatch) {
+      attachments.push({
+        file_path: reportPathMatch[1].trim(),
+        file_name: reportNameMatch[1].trim(),
+        type: "report",
+        pdf_file_path: reportPathMatch[1].trim(),
+        pdf_file_name: reportNameMatch[1].trim(),
+      });
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PARSE ANTHROPIC SSE STREAM
+// ═══════════════════════════════════════════════════════════════
+
+interface StreamedMessage {
+  // deno-lint-ignore no-explicit-any
+  content: any[];
+  stop_reason: string | null;
+}
+
+async function parseAnthropicStream(
+  response: Response,
+  controller: ReadableStreamDefaultController | null,
+): Promise<StreamedMessage> {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  // deno-lint-ignore no-explicit-any
+  const contentBlocks: any[] = [];
+  let stopReason: string | null = null;
+
+  // Track current content block for accumulation
+  // deno-lint-ignore no-explicit-any
+  const blockAccumulators: Record<number, any> = {};
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop()!;
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const dataStr = line.slice(6).trim();
+      if (dataStr === "[DONE]") continue;
+
+      let event;
+      try {
+        event = JSON.parse(dataStr);
+      } catch {
+        continue;
+      }
+
+      switch (event.type) {
+        case "content_block_start": {
+          const idx = event.index;
+          const block = event.content_block;
+          if (block.type === "text") {
+            blockAccumulators[idx] = { type: "text", text: "" };
+          } else if (block.type === "tool_use") {
+            blockAccumulators[idx] = {
+              type: "tool_use",
+              id: block.id,
+              name: block.name,
+              input: "",
+            };
+            // Emit tool_start event
+            if (controller) {
+              sseEvent(controller, "tool_start", { name: block.name });
+            }
+          }
+          break;
+        }
+
+        case "content_block_delta": {
+          const idx = event.index;
+          const delta = event.delta;
+          if (delta.type === "text_delta" && blockAccumulators[idx]) {
+            blockAccumulators[idx].text += delta.text;
+            // Emit text_delta to client
+            if (controller) {
+              sseEvent(controller, "text_delta", { delta: delta.text });
+            }
+          } else if (delta.type === "input_json_delta" && blockAccumulators[idx]) {
+            blockAccumulators[idx].input += delta.partial_json;
+          }
+          break;
+        }
+
+        case "content_block_stop": {
+          const idx = event.index;
+          const acc = blockAccumulators[idx];
+          if (acc) {
+            if (acc.type === "tool_use") {
+              // Parse accumulated JSON input
+              try {
+                acc.input = JSON.parse(acc.input || "{}");
+              } catch {
+                acc.input = {};
+              }
+            }
+            contentBlocks.push(acc);
+          }
+          break;
+        }
+
+        case "message_delta": {
+          if (event.delta?.stop_reason) {
+            stopReason = event.delta.stop_reason;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  return { content: contentBlocks, stop_reason: stopReason };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// STREAMING AGENT LOOP
+// ═══════════════════════════════════════════════════════════════
+
+async function agentLoopStreaming(
+  controller: ReadableStreamDefaultController,
+  userMessage: string,
+  // deno-lint-ignore no-explicit-any
+  supabase: any,
+  userId: string,
+  userJwt: string,
+  userContext?: string,
+  conversationId?: string,
+) {
+  const MAX_TURNS = 5;
+  const toolsUsed: string[] = [];
+  const attachments: AgentAttachment[] = [];
+  let summaryId: string | undefined;
+
+  // deno-lint-ignore no-explicit-any
+  const messages: Array<{ role: string; content: any }> = [];
+
+  // Load conversation history
+  if (conversationId) {
+    try {
+      const { data: historyRows, error: histError } = await supabase
+        .from("conversation_messages")
+        .select("role, content, attachments")
+        .eq("conversation_id", conversationId)
+        .order("created_at", { ascending: true })
+        .limit(20);
+
+      if (!histError && historyRows && historyRows.length > 0) {
+        for (const row of historyRows) {
+          let content = row.content;
+          if (row.role === "assistant" && row.attachments && Array.isArray(row.attachments) && row.attachments.length > 0) {
+            const attachInfo = row.attachments
+              // deno-lint-ignore no-explicit-any
+              .map((a: any) => `[Fichier créé: ${a.file_name} — file_path: ${a.file_path}]`)
+              .join("\n");
+            content += `\n\n${attachInfo}`;
+          }
+          messages.push({ role: row.role, content });
+        }
+        console.log(`[Agent] Loaded ${historyRows.length} previous messages from conversation ${conversationId}`);
+      }
+    } catch (err) {
+      console.warn("[Agent] Failed to load conversation history:", err);
+    }
+  }
+
+  const fullUserMessage = userContext
+    ? `${userMessage}\n\n--- CONTEXT FOURNI ---\n${userContext}`
+    : userMessage;
+  messages.push({ role: "user", content: fullUserMessage });
+
+  let fullResponseText = "";
+
+  for (let turn = 0; turn < MAX_TURNS; turn++) {
+    console.log(`[Agent] Tour ${turn + 1}/${MAX_TURNS} (streaming)`);
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 16384,
+        stream: true,
+        system: buildSystemPrompt(),
+        messages,
+        tools: AGENT_TOOLS,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Anthropic API error (${response.status}): ${errorText}`);
+    }
+
+    // Parse the Anthropic SSE stream, emitting text_delta events to client
+    const result = await parseAnthropicStream(response, controller);
+
+    // Add assistant message to conversation
+    messages.push({ role: "assistant", content: result.content });
+
+    // Case 1: end_turn → done
+    if (result.stop_reason === "end_turn") {
+      const textBlock = result.content.find(
+        (block: { type: string }) => block.type === "text"
+      );
+      fullResponseText = textBlock?.text || "Désolé, je n'ai pas pu formuler de réponse.";
+
+      const agentResult: AgentResult = {
+        response: fullResponseText,
+        tools_used: toolsUsed,
+      };
+      if (summaryId) agentResult.summary_id = summaryId;
+      if (attachments.length > 0) agentResult.attachments = attachments;
+
+      sseEvent(controller, "done", agentResult);
+      controller.close();
+      return;
+    }
+
+    // Case 2: tool_use → execute tools
+    if (result.stop_reason === "tool_use") {
+      const toolUseBlocks = result.content.filter(
+        (block: { type: string }) => block.type === "tool_use"
+      );
+
+      const toolResults = await Promise.all(
+        // deno-lint-ignore no-explicit-any
+        toolUseBlocks.map(async (toolCall: any) => {
+          console.log(`[Agent] → Appel outil: ${toolCall.name}`, toolCall.input);
+          toolsUsed.push(toolCall.name);
+
+          let toolResultText: string;
+          try {
+            const execResult = await executeTool(toolCall.name, toolCall.input, supabase, userId, userJwt);
+            toolResultText = execResult.text;
+            if (execResult.summaryId) summaryId = execResult.summaryId;
+          } catch (err) {
+            toolResultText = `Erreur lors de l'exécution de ${toolCall.name}: ${
+              err instanceof Error ? err.message : "Erreur inconnue"
+            }`;
+          }
+
+          // Extract attachments
+          extractAttachments(toolCall.name, toolResultText, attachments);
+
+          console.log(`[Agent] ← Résultat ${toolCall.name}: ${toolResultText.substring(0, 100)}...`);
+
+          // Log activity (non-blocking)
+          const actStatus = toolResultText.startsWith("Erreur") ? "error" as const : "success" as const;
+          logActivity(supabase, userId, toolCall.name, toolCall.input, toolResultText, actStatus);
+
+          // Emit tool_result event
+          sseEvent(controller, "tool_result", {
+            name: toolCall.name,
+            status: actStatus,
+            summary: toolResultText.substring(0, 200),
+          });
+
+          return {
+            type: "tool_result" as const,
+            tool_use_id: toolCall.id,
+            content: toolResultText,
+          };
+        })
+      );
+
+      messages.push({ role: "user", content: toolResults });
+      continue;
+    }
+
+    // Case 3: unexpected stop
+    const fallbackText = result.content?.find(
+      (block: { type: string }) => block.type === "text"
+    );
+    fullResponseText = fallbackText?.text || "Désolé, la réponse a été interrompue.";
+
+    const fallbackResult: AgentResult = {
+      response: fullResponseText,
+      tools_used: toolsUsed,
+    };
+    if (attachments.length > 0) fallbackResult.attachments = attachments;
+    sseEvent(controller, "done", fallbackResult);
+    controller.close();
+    return;
+  }
+
+  // Max turns reached
+  const maxTurnResult: AgentResult = {
+    response: "Désolé, j'ai atteint la limite de traitement. Essaie de simplifier ta demande.",
+    tools_used: toolsUsed,
+  };
+  if (attachments.length > 0) maxTurnResult.attachments = attachments;
+  sseEvent(controller, "done", maxTurnResult);
+  controller.close();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// NON-STREAMING AGENT LOOP (fallback / backward compatibility)
 // ═══════════════════════════════════════════════════════════════
 
 async function agentLoop(
@@ -60,7 +500,6 @@ async function agentLoop(
       if (!histError && historyRows && historyRows.length > 0) {
         for (const row of historyRows) {
           let content = row.content;
-          // Enrichir les messages assistant avec les infos d'attachments (présentations, etc.)
           if (row.role === "assistant" && row.attachments && Array.isArray(row.attachments) && row.attachments.length > 0) {
             const attachInfo = row.attachments
               // deno-lint-ignore no-explicit-any
@@ -77,11 +516,9 @@ async function agentLoop(
     }
   }
 
-  // Construire le message utilisateur courant
   const fullUserMessage = userContext
     ? `${userMessage}\n\n--- CONTEXT FOURNI ---\n${userContext}`
     : userMessage;
-
   messages.push({ role: "user", content: fullUserMessage });
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -109,19 +546,14 @@ async function agentLoop(
     }
 
     const result = await response.json();
-
-    // Ajouter la réponse assistant à la conversation
     messages.push({ role: "assistant", content: result.content });
 
-    // ── Cas 1: Claude a terminé → extraire la réponse texte ──
     if (result.stop_reason === "end_turn") {
       const textBlock = result.content.find(
         (block: { type: string }) => block.type === "text"
       );
       const agentResult: AgentResult = {
-        response:
-          textBlock?.text ||
-          "Désolé, je n'ai pas pu formuler de réponse.",
+        response: textBlock?.text || "Désolé, je n'ai pas pu formuler de réponse.",
         tools_used: toolsUsed,
       };
       if (summaryId) agentResult.summary_id = summaryId;
@@ -129,223 +561,58 @@ async function agentLoop(
       return agentResult;
     }
 
-    // ── Cas 2: Claude veut appeler des outils ──
     if (result.stop_reason === "tool_use") {
       const toolUseBlocks = result.content.filter(
         (block: { type: string }) => block.type === "tool_use"
       );
 
-      // Exécuter tous les outils en PARALLÈLE avec Promise.all
       const toolResults = await Promise.all(
         // deno-lint-ignore no-explicit-any
         toolUseBlocks.map(async (toolCall: any) => {
           console.log(`[Agent] → Appel outil: ${toolCall.name}`, toolCall.input);
           toolsUsed.push(toolCall.name);
 
-          let toolResult: string;
-
+          let toolResultText: string;
           try {
-            switch (toolCall.name) {
-              case "get_recent_context":
-                toolResult = await executeGetRecentContext(supabase, toolCall.input, userId);
-                break;
-              case "generate_summary":
-                toolResult = await executeGenerateSummary(toolCall.input);
-                break;
-              case "save_summary": {
-                const saveResult = await executeSaveSummary(supabase, toolCall.input, userId);
-                toolResult = saveResult.text;
-                if (saveResult.id) summaryId = saveResult.id;
-                break;
-              }
-              case "search_memory":
-                toolResult = await executeSearchMemory(supabase, toolCall.input);
-                break;
-              case "send_email":
-                toolResult = await executeSendEmail(toolCall.input, userJwt);
-                break;
-              case "list_emails":
-                toolResult = await executeListEmails(toolCall.input, userJwt);
-                break;
-              case "read_email":
-                toolResult = await executeReadEmail(toolCall.input, userJwt);
-                break;
-              case "search_contacts":
-                toolResult = await executeSearchContacts(toolCall.input, userJwt);
-                break;
-              case "save_contact":
-                toolResult = await executeSaveContact(toolCall.input, userJwt);
-                break;
-              case "add_meeting_note":
-                toolResult = await executeAddMeetingNote(toolCall.input, userJwt);
-                break;
-              case "create_calendar_event":
-                toolResult = await executeCreateCalendarEvent(toolCall.input, userJwt);
-                break;
-              case "list_calendar_events":
-                toolResult = await executeListCalendarEvents(toolCall.input, userJwt);
-                break;
-              case "update_calendar_event":
-                toolResult = await executeUpdateCalendarEvent(toolCall.input, userJwt);
-                break;
-              case "send_sms":
-                toolResult = await executeSendSMS(toolCall.input, userJwt);
-                break;
-              case "send_whatsapp":
-                toolResult = await executeSendWhatsApp(toolCall.input, userJwt);
-                break;
-              case "hubspot_search_contacts":
-                toolResult = await executeHubspotSearchContacts(toolCall.input, userJwt);
-                break;
-              case "hubspot_create_contact":
-                toolResult = await executeHubspotCreateContact(toolCall.input, userJwt);
-                break;
-              case "hubspot_update_contact":
-                toolResult = await executeHubspotUpdateContact(toolCall.input, userJwt);
-                break;
-              case "hubspot_delete_contact":
-                toolResult = await executeHubspotDeleteContact(toolCall.input, userJwt);
-                break;
-              case "hubspot_search_deals":
-                toolResult = await executeHubspotSearchDeals(toolCall.input, userJwt);
-                break;
-              case "hubspot_create_deal":
-                toolResult = await executeHubspotCreateDeal(toolCall.input, userJwt);
-                break;
-              case "hubspot_update_deal":
-                toolResult = await executeHubspotUpdateDeal(toolCall.input, userJwt);
-                break;
-              case "hubspot_get_pipeline":
-                toolResult = await executeHubspotGetPipeline(toolCall.input, userJwt);
-                break;
-              case "hubspot_get_notes":
-                toolResult = await executeHubspotGetNotes(toolCall.input, userJwt);
-                break;
-              case "hubspot_create_note":
-                toolResult = await executeHubspotCreateNote(toolCall.input, userJwt);
-                break;
-              case "hubspot_update_note":
-                toolResult = await executeHubspotUpdateNote(toolCall.input, userJwt);
-                break;
-              case "slack_send_message":
-                toolResult = await executeSlackSendMessage(toolCall.input, userJwt);
-                break;
-              case "slack_send_dm":
-                toolResult = await executeSlackSendDm(toolCall.input, userJwt);
-                break;
-              case "slack_list_channels":
-                toolResult = await executeSlackListChannels(toolCall.input, userJwt);
-                break;
-              case "slack_list_users":
-                toolResult = await executeSlackListUsers(toolCall.input, userJwt);
-                break;
-              case "slack_get_channel_history":
-                toolResult = await executeSlackGetChannelHistory(toolCall.input, userJwt);
-                break;
-              case "web_search":
-                toolResult = await executeWebSearch(toolCall.input);
-                break;
-              case "datagouv_search":
-                toolResult = await executeDatagouvSearch(toolCall.input);
-                break;
-              case "datagouv_get_dataset":
-                toolResult = await executeDatagouvGetDataset(toolCall.input);
-                break;
-              case "datagouv_query_data":
-                toolResult = await executeDatagouvQueryData(toolCall.input);
-                break;
-              case "datagouv_get_resource_info":
-                toolResult = await executeDatagouvGetResourceInfo(toolCall.input);
-                break;
-              case "datagouv_get_metrics":
-                toolResult = await executeDatagouvGetMetrics();
-                break;
-              case "datagouv_search_dataservices":
-                toolResult = await executeDatagouvSearchDataservices(toolCall.input);
-                break;
-              case "create_presentation":
-                toolResult = await executeCreatePresentation(toolCall.input, userJwt);
-                if (!toolResult.startsWith("Erreur")) {
-                  const filePathMatch = toolResult.match(/Chemin PPTX \(file_path\): (.+)/);
-                  const fileNameMatch = toolResult.match(/PPTX: (.+?) \(/);
-                  if (filePathMatch && fileNameMatch) {
-                    const att: AgentAttachment & { pdf_file_path?: string; pdf_file_name?: string } = {
-                      file_path: filePathMatch[1].trim(),
-                      file_name: fileNameMatch[1].trim(),
-                      type: "presentation",
-                    };
-                    const pdfPathMatch = toolResult.match(/Chemin PDF \(pdf_file_path\): (.+)/);
-                    const pdfNameMatch = toolResult.match(/PDF: (.+?) \(/);
-                    if (pdfPathMatch) att.pdf_file_path = pdfPathMatch[1].trim();
-                    if (pdfNameMatch) att.pdf_file_name = pdfNameMatch[1].trim();
-                    attachments.push(att);
-                  }
-                }
-                break;
-              case "create_report":
-                toolResult = await executeCreateReport(toolCall.input, userJwt);
-                if (!toolResult.startsWith("Erreur")) {
-                  const reportPathMatch = toolResult.match(/Chemin PDF \(file_path\): (.+)/);
-                  const reportNameMatch = toolResult.match(/PDF: (.+?) \(/);
-                  if (reportPathMatch && reportNameMatch) {
-                    attachments.push({
-                      file_path: reportPathMatch[1].trim(),
-                      file_name: reportNameMatch[1].trim(),
-                      type: "report",
-                      pdf_file_path: reportPathMatch[1].trim(),
-                      pdf_file_name: reportNameMatch[1].trim(),
-                    });
-                  }
-                }
-                break;
-              case "send_email_with_attachment":
-                toolResult = await executeSendEmailWithAttachment(toolCall.input, userJwt);
-                break;
-              default:
-                toolResult = `Outil inconnu: ${toolCall.name}`;
-            }
+            const execResult = await executeTool(toolCall.name, toolCall.input, supabase, userId, userJwt);
+            toolResultText = execResult.text;
+            if (execResult.summaryId) summaryId = execResult.summaryId;
           } catch (err) {
-            toolResult = `Erreur lors de l'exécution de ${toolCall.name}: ${
+            toolResultText = `Erreur lors de l'exécution de ${toolCall.name}: ${
               err instanceof Error ? err.message : "Erreur inconnue"
             }`;
           }
 
-          console.log(
-            `[Agent] ← Résultat ${toolCall.name}: ${toolResult.substring(0, 100)}...`
-          );
+          extractAttachments(toolCall.name, toolResultText, attachments);
 
-          // Logger l'activité (non-bloquant)
-          const actStatus = toolResult.startsWith("Erreur") ? "error" as const : "success" as const;
-          logActivity(supabase, userId, toolCall.name, toolCall.input, toolResult, actStatus);
+          console.log(`[Agent] ← Résultat ${toolCall.name}: ${toolResultText.substring(0, 100)}...`);
+
+          const actStatus = toolResultText.startsWith("Erreur") ? "error" as const : "success" as const;
+          logActivity(supabase, userId, toolCall.name, toolCall.input, toolResultText, actStatus);
 
           return {
             type: "tool_result" as const,
             tool_use_id: toolCall.id,
-            content: toolResult,
+            content: toolResultText,
           };
         })
       );
 
-      // Renvoyer les résultats des outils à Claude
       messages.push({ role: "user", content: toolResults });
       continue;
     }
 
-    // ── Cas 3: stop inattendu (max_tokens, etc.) ──
     const fallbackText = result.content?.find(
       (block: { type: string }) => block.type === "text"
     );
     return {
-      response:
-        fallbackText?.text ||
-        "Désolé, la réponse a été interrompue. Essaie de reformuler.",
+      response: fallbackText?.text || "Désolé, la réponse a été interrompue. Essaie de reformuler.",
       tools_used: toolsUsed,
     };
   }
 
   return {
-    response:
-      "Désolé, j'ai atteint la limite de traitement. Essaie de simplifier ta demande.",
+    response: "Désolé, j'ai atteint la limite de traitement. Essaie de simplifier ta demande.",
     tools_used: toolsUsed,
   };
 }
@@ -361,7 +628,7 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { message, context, conversation_id } = body;
+    const { message, context, conversation_id, stream: wantStream } = body;
 
     if (!message || typeof message !== "string" || message.trim().length === 0) {
       return new Response(
@@ -378,7 +645,6 @@ Deno.serve(async (req: Request) => {
         ? context.trim()
         : undefined;
 
-    // Extraire le JWT de l'utilisateur pour le forwarding inter-fonctions
     let userId: string;
     let userJwt: string;
     try {
@@ -391,13 +657,49 @@ Deno.serve(async (req: Request) => {
     }
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
     const convId = conversation_id && typeof conversation_id === "string" ? conversation_id.trim() : undefined;
-    console.log(`[aura-agent] Message: "${message.substring(0, 100)}" | User: ${userId}${userContext ? ` | Context: ${userContext.length} chars` : ""}${convId ? ` | Conv: ${convId}` : ""}`);
+    console.log(`[aura-agent] Message: "${message.substring(0, 100)}" | User: ${userId}${userContext ? ` | Context: ${userContext.length} chars` : ""}${convId ? ` | Conv: ${convId}` : ""} | Stream: ${!!wantStream}`);
+
+    // ── STREAMING MODE ──
+    if (wantStream) {
+      const stream = new ReadableStream({
+        start(controller) {
+          agentLoopStreaming(
+            controller,
+            message.trim(),
+            supabase,
+            userId,
+            userJwt,
+            userContext,
+            convId,
+          ).catch((error) => {
+            console.error("[aura-agent] Streaming error:", error);
+            try {
+              sseEvent(controller, "error", {
+                error: error instanceof Error ? error.message : "Erreur inconnue",
+              });
+              controller.close();
+            } catch {
+              // Controller may already be closed
+            }
+          });
+        },
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
+      });
+    }
+
+    // ── NON-STREAMING MODE (backward compatible) ──
     const result = await agentLoop(message.trim(), supabase, userId, userJwt, userContext, convId);
-    console.log(
-      `[aura-agent] Terminé. Outils: [${result.tools_used.join(", ")}]`
-    );
+    console.log(`[aura-agent] Terminé. Outils: [${result.tools_used.join(", ")}]`);
 
     return new Response(JSON.stringify(result), {
       status: 200,

@@ -7,7 +7,7 @@ from app.routes import activity, chat, contacts, conversations, discussions, hea
 
 app = FastAPI(title="AURA POC Backend")
 
-_default_origins = "http://localhost:3000,http://localhost:3001,http://localhost:3002"
+_default_origins = "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3003"
 allowed_origins = os.getenv("CORS_ORIGINS", _default_origins).split(",")
 
 app.add_middleware(

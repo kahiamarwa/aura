@@ -89,6 +89,116 @@ export async function sendChat(
   return { text, audioBlob, attachments };
 }
 
+/**
+ * Streaming version of sendChat — text appears progressively via SSE.
+ * Callbacks fire as events arrive; final ChatResult returned when done.
+ */
+export async function sendChatStream(
+  command: string,
+  context: TranscriptionSegment[],
+  accessToken?: string,
+  conversationId?: string | null,
+  onTextDelta?: (delta: string) => void,
+  onToolStart?: (name: string) => void,
+  onToolResult?: (name: string, status: string) => void,
+): Promise<ChatResult> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Accept": "text/event-stream",
+  };
+  if (accessToken) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  }
+
+  // deno-lint-ignore no-explicit-any
+  const body: Record<string, any> = {
+    command,
+    context,
+    user_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  };
+  if (conversationId) {
+    body.conversation_id = conversationId;
+  }
+
+  const response = await fetch(`${BACKEND_URL}/api/chat`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    console.error("[API] Chat stream error:", response.status, detail);
+    throw new Error(`Agent error: ${response.status}`);
+  }
+
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let fullText = "";
+  let attachments: ChatAttachment[] | undefined;
+  let buffer = "";
+  let currentEvent = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+    buffer = lines.pop()!; // keep incomplete last line
+
+    for (const line of lines) {
+      if (line.startsWith("event: ")) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith("data: ")) {
+        try {
+          const data = JSON.parse(line.slice(6));
+          switch (currentEvent) {
+            case "text_delta":
+              fullText += data.delta;
+              onTextDelta?.(data.delta);
+              break;
+            case "tool_start":
+              onToolStart?.(data.name);
+              break;
+            case "tool_result":
+              onToolResult?.(data.name, data.status);
+              break;
+            case "done":
+              fullText = data.response || fullText;
+              attachments = data.attachments;
+              break;
+            case "error":
+              console.error("[API] Stream error event:", data);
+              break;
+          }
+        } catch {
+          // Skip malformed JSON lines
+        }
+      }
+    }
+  }
+
+  // TTS after streaming complete
+  let audioBlob: Blob | null = null;
+  try {
+    const ttsRes = await fetch(`${BACKEND_URL}/api/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: fullText }),
+    });
+    if (ttsRes.ok) {
+      audioBlob = await ttsRes.blob();
+    } else {
+      console.warn("[API] TTS failed:", ttsRes.status);
+    }
+  } catch (e) {
+    console.warn("[API] TTS error, continuing without audio:", e);
+  }
+
+  return { text: fullText, audioBlob, attachments };
+}
+
 // Fetch summaries
 export async function fetchSummaries(accessToken: string, limit = 20, offset = 0) {
   const res = await fetch(`${BACKEND_URL}/api/summaries?limit=${limit}&offset=${offset}`, {

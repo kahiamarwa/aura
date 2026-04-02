@@ -294,7 +294,60 @@ export default function Home() {
                       }}
                     >
                       <ReactMarkdown>{entry.response}</ReactMarkdown>
+                      {entry.isStreaming && (
+                        <span
+                          style={{
+                            display: "inline-block",
+                            width: 7,
+                            height: 16,
+                            background: "#e07a3a",
+                            borderRadius: 2,
+                            marginLeft: 2,
+                            animation: "blink 1s step-end infinite",
+                          }}
+                        />
+                      )}
                     </div>
+                    {entry.toolInProgress && (
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          marginTop: 8,
+                          padding: "8px 12px",
+                          borderRadius: 8,
+                          background: "rgba(224, 122, 58, 0.08)",
+                          border: "1px solid rgba(224, 122, 58, 0.2)",
+                          fontSize: 13,
+                          color: "#6b6560",
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 16,
+                            height: 16,
+                            border: "2px solid #e07a3a",
+                            borderTopColor: "transparent",
+                            borderRadius: "50%",
+                            animation: "spin 0.8s linear infinite",
+                          }}
+                        />
+                        <span>
+                          {entry.toolInProgress === "create_report"
+                            ? "Création du rapport..."
+                            : entry.toolInProgress === "create_presentation"
+                              ? "Création de la présentation..."
+                              : entry.toolInProgress === "web_search"
+                                ? "Recherche sur internet..."
+                                : entry.toolInProgress === "send_email"
+                                  ? "Envoi de l'email..."
+                                  : entry.toolInProgress === "send_whatsapp"
+                                    ? "Envoi WhatsApp..."
+                                    : `${entry.toolInProgress}...`}
+                        </span>
+                      </div>
+                    )}
                     {entry.attachments && entry.attachments.length > 0 && (
                       <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
                         {entry.attachments.map((att, idx) => {

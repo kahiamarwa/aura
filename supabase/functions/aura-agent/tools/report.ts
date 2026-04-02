@@ -13,7 +13,8 @@ export async function executeCreateReport(
     footer_text?: string;
     include_logo?: boolean;
     reference?: string;
-    sections: Array<{
+    html_content?: string;
+    sections?: Array<{
       type: string;
       level?: number;
       text?: string;
@@ -30,11 +31,35 @@ export async function executeCreateReport(
   userJwt: string
 ): Promise<string> {
   const url = `${SUPABASE_URL}/functions/v1/pptx-proxy`;
-  console.log(
-    `[create_report] Appel ${url} — "${params.title}" (${params.sections.length} sections)`
-  );
+  const sectionCount = params.sections?.length || 0;
+  const mode = params.html_content ? "HTML/Gotenberg" : `${sectionCount} sections`;
+  console.log(`[create_report] Appel ${url} — "${params.title}" (${mode})`);
 
   try {
+    // deno-lint-ignore no-explicit-any
+    const body: Record<string, any> = {
+      title: params.title,
+      subtitle: params.subtitle,
+      include_logo: params.include_logo,
+      reference: params.reference,
+    };
+
+    if (params.html_content) {
+      // Gotenberg path: HTML → PDF
+      body.html_content = params.html_content;
+      // sections still needed as marker for pptx-proxy isReport detection
+      body.sections = params.sections || [{ type: "page_break" }];
+    } else {
+      // Legacy path: JSON sections → Python/fpdf2
+      body.theme = params.theme || "professional";
+      body.template = params.template || "executive";
+      body.document_type = params.document_type || "custom";
+      body.custom_color = params.custom_color;
+      body.metadata = params.metadata;
+      body.footer_text = params.footer_text;
+      body.sections = params.sections || [];
+    }
+
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -42,19 +67,7 @@ export async function executeCreateReport(
         apikey: SUPABASE_ANON_KEY,
         Authorization: userJwt,
       },
-      body: JSON.stringify({
-        title: params.title,
-        subtitle: params.subtitle,
-        theme: params.theme || "professional",
-        template: params.template || "executive",
-        document_type: params.document_type || "custom",
-        custom_color: params.custom_color,
-        metadata: params.metadata,
-        footer_text: params.footer_text,
-        include_logo: params.include_logo,
-        reference: params.reference,
-        sections: params.sections,
-      }),
+      body: JSON.stringify(body),
     });
 
     const responseText = await response.text();

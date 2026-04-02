@@ -2,10 +2,11 @@ import logging
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from app.config import get_settings
 from app.schemas import ChatRequest
-from app.services.llm_service import get_response
+from app.services.llm_service import get_response, stream_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -89,6 +90,25 @@ async def chat(request: ChatRequest, raw_request: Request):
     else:
         logger.info("═══ NO ENRICHED CONTEXT (fallback to raw segments) ═══")
 
+    # Check if client wants streaming
+    accept = raw_request.headers.get("Accept", "")
+    if "text/event-stream" in accept:
+        logger.info("Streaming mode requested")
+        return StreamingResponse(
+            stream_response(
+                command=request.command,
+                context=request.context,
+                agent_url=settings.AURA_AGENT_URL,
+                agent_token=settings.AURA_AGENT_TOKEN,
+                user_token=user_token,
+                enriched_context=enriched_context,
+                conversation_id=request.conversation_id,
+            ),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # Non-streaming fallback
     try:
         agent_result = await get_response(
             command=request.command,

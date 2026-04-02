@@ -9,7 +9,7 @@ import { useCommandSTT } from "./useCommandSTT";
 import { useOpenWakeWord } from "./useOpenWakeWord";
 import { useAudioPlayer } from "./useAudioPlayer";
 import { useAuthContext } from "@/context/AuthContext";
-import { sendChat, createConversation, addConversationMessage, listConversations, fetchConversationDetail } from "@/lib/api";
+import { sendChat, sendChatStream, createConversation, addConversationMessage, listConversations, fetchConversationDetail } from "@/lib/api";
 import { contextBuffer } from "@/lib/contextBuffer";
 import { contextPersistence } from "@/lib/contextPersistence";
 import {
@@ -126,29 +126,83 @@ export function useAuraSession(): UseAuraSessionReturn {
       setState("thinking");
       stateRef.current = "thinking";
 
+      const entryId = crypto.randomUUID();
+
       try {
         const context = contextBuffer.getContext();
         const accessToken = authSession?.access_token;
-        console.log("[AURA] Sending to API:", {
+        console.log("[AURA] Sending to API (streaming):", {
           command,
           contextCount: context.length,
           hasToken: !!accessToken,
         });
-        const result = await sendChat(command, context, accessToken, conversationIdRef.current);
-        console.log("[AURA] API response:", {
+
+        // Add entry immediately with empty response (streaming will fill it)
+        const entry: ConversationEntry = {
+          id: entryId,
+          timestamp: new Date(),
+          command,
+          response: "",
+          isStreaming: true,
+        };
+        setHistory((prev) => [...prev, entry]);
+
+        const result = await sendChatStream(
+          command,
+          context,
+          accessToken,
+          conversationIdRef.current,
+          // onTextDelta — progressive text update
+          (delta) => {
+            setHistory((prev) =>
+              prev.map((e) =>
+                e.id === entryId
+                  ? { ...e, response: e.response + delta }
+                  : e
+              )
+            );
+          },
+          // onToolStart
+          (name) => {
+            setHistory((prev) =>
+              prev.map((e) =>
+                e.id === entryId
+                  ? { ...e, toolInProgress: name }
+                  : e
+              )
+            );
+          },
+          // onToolResult
+          () => {
+            setHistory((prev) =>
+              prev.map((e) =>
+                e.id === entryId
+                  ? { ...e, toolInProgress: undefined }
+                  : e
+              )
+            );
+          },
+        );
+
+        console.log("[AURA] Streaming complete:", {
           text: result.text?.substring(0, 100),
           hasAudio: !!result.audioBlob,
         });
 
-        // Add to history
-        const entry: ConversationEntry = {
-          id: crypto.randomUUID(),
-          timestamp: new Date(),
-          command,
-          response: result.text,
-          attachments: result.attachments,
-        };
-        setHistory((prev) => [...prev, entry]);
+        // Finalize entry with complete data
+        setHistory((prev) =>
+          prev.map((e) =>
+            e.id === entryId
+              ? {
+                  ...e,
+                  response: result.text,
+                  attachments: result.attachments,
+                  isStreaming: false,
+                  toolInProgress: undefined,
+                }
+              : e
+          )
+        );
 
         // Persist conversation to backend
         if (accessToken) {
@@ -180,25 +234,29 @@ export function useAuraSession(): UseAuraSessionReturn {
           setState("speaking");
           stateRef.current = "speaking";
           await player.play(result.audioBlob);
-          // play() resolves when audio ends OR when stop() is called (barge-in)
         }
       } catch (err) {
+        // Remove streaming entry or mark as error
+        setHistory((prev) =>
+          prev.map((e) =>
+            e.id === entryId
+              ? { ...e, isStreaming: false, response: e.response || "Erreur lors du traitement." }
+              : e
+          )
+        );
         setErrors((prev) => [
           ...prev,
           err instanceof Error ? err.message : "Erreur LLM/TTS",
         ]);
       }
 
-      // Check if we were interrupted by barge-in (state would already be "listening")
+      // Check if we were interrupted by barge-in
       if (
         stateRef.current === "speaking" ||
         stateRef.current === "thinking"
       ) {
-        // Not interrupted — enter conversation mode
         startConversationWindow();
       } else {
-        // We were interrupted (barge-in), state is already "listening"
-        // Do nothing — the barge-in handler already took over
         console.log(
           "[AURA] Barge-in detected, skipping conversing transition"
         );
