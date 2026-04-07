@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { AuthProvider } from "@/context/AuthContext";
 import { AuraSessionProvider } from "@/context/AuraSessionContext";
+import { ThemeProvider } from "@/context/ThemeContext";
 import { LayoutShell } from "@/components/LayoutShell";
 import "./globals.css";
 
@@ -27,9 +28,11 @@ export default function RootLayout({
         style={{ background: "var(--bg)" }}
       >
         <AuthProvider>
-          <AuraSessionProvider>
-            <LayoutShell>{children}</LayoutShell>
-          </AuraSessionProvider>
+          <ThemeProvider>
+            <AuraSessionProvider>
+              <LayoutShell>{children}</LayoutShell>
+            </AuraSessionProvider>
+          </ThemeProvider>
         </AuthProvider>
       </body>
     </html>

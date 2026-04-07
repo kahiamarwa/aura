@@ -21,6 +21,14 @@ export function AuraSessionProvider({ children }: { children: ReactNode }) {
     }
   }, [loading, user, session.state, session.initialize]);
 
+  // Stop services when user logs out
+  useEffect(() => {
+    if (!loading && !user && hasInitialized.current) {
+      hasInitialized.current = false;
+      session.cleanup?.();
+    }
+  }, [loading, user, session.cleanup]);
+
   return (
     <AuraSessionContext.Provider value={session}>
       {children}

@@ -1,10 +1,13 @@
 from pathlib import Path
 
+import os
+
 import numpy as np
 from openwakeword.model import Model
 
-# Chemin absolu vers le modele, relatif a la racine du projet (backend/../openwake/)
-_MODEL_PATH = str(Path(__file__).resolve().parents[3] / "openwake" / "Aura_test.onnx")
+_CUSTOM_DOCKER = "/openwake/dis_aura.onnx"
+_CUSTOM_LOCAL = str(Path(__file__).resolve().parents[3] / "openwake" / "dis_aura.onnx")
+_MODEL_PATH = os.getenv("WAKEWORD_MODEL_PATH", _CUSTOM_DOCKER if os.path.exists(_CUSTOM_DOCKER) else _CUSTOM_LOCAL)
 
 
 class WakeWordService:
@@ -19,6 +22,8 @@ class WakeWordService:
         )
         self.model_names = list(self.model.models.keys())
         self.threshold = 0.3
+        print(f"[WakeWordService] Model: {_MODEL_PATH}")
+        print(f"[WakeWordService] Models: {self.model_names}, threshold: {self.threshold}")
 
     @classmethod
     def get_instance(cls):

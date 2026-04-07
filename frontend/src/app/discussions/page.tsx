@@ -3,19 +3,20 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthContext } from "@/context/AuthContext";
-import { fetchDiscussions } from "@/lib/api";
+import { useAuraSessionContext } from "@/context/AuraSessionContext";
+import { listConversations, deleteConversation } from "@/lib/api";
 
-interface Discussion {
+interface Conversation {
   id: string;
   title: string;
-  last_message_at: string;
   created_at: string;
-  message_count?: number;
+  updated_at: string;
 }
 
 function formatRelativeTime(iso: string): string {
   const now = Date.now();
   const then = new Date(iso).getTime();
+  if (isNaN(then)) return "";
   const diff = now - then;
 
   const minutes = Math.floor(diff / 60000);
@@ -31,6 +32,7 @@ function formatRelativeTime(iso: string): string {
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
+  if (isNaN(d.getTime())) return "Date inconnue";
   const today = new Date();
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
@@ -45,16 +47,15 @@ function formatDate(iso: string): string {
 }
 
 function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString("fr-FR", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
 }
 
-function groupByDate(items: Discussion[]): Record<string, Discussion[]> {
-  const groups: Record<string, Discussion[]> = {};
+function groupByDate(items: Conversation[]): Record<string, Conversation[]> {
+  const groups: Record<string, Conversation[]> = {};
   for (const item of items) {
-    const key = formatDate(item.last_message_at || item.created_at);
+    const key = formatDate(item.updated_at || item.created_at);
     if (!groups[key]) groups[key] = [];
     groups[key].push(item);
   }
@@ -64,24 +65,24 @@ function groupByDate(items: Discussion[]): Record<string, Discussion[]> {
 export default function DiscussionsPage() {
   const router = useRouter();
   const { user, session, loading: authLoading } = useAuthContext();
-  const [discussions, setDiscussions] = useState<Discussion[]>([]);
+  const auraSession = useAuraSessionContext();
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [deleting, setDeleting] = useState<string | null>(null);
 
-  const load = useCallback(
-    (q = "") => {
-      if (!session) return;
-      setLoading(true);
-      fetchDiscussions(session.access_token, q)
-        .then((data) => {
-          setDiscussions(Array.isArray(data) ? data : data.discussions ?? []);
-        })
-        .catch((e) => setError(e.message))
-        .finally(() => setLoading(false));
-    },
-    [session],
-  );
+  const load = useCallback(() => {
+    if (!session) return;
+    setLoading(true);
+    listConversations(session.access_token, 50)
+      .then((data) => {
+        const list: Conversation[] = Array.isArray(data) ? data : data.conversations ?? [];
+        setConversations(list);
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [session]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -92,37 +93,42 @@ export default function DiscussionsPage() {
     load();
   }, [user, session, authLoading, router, load]);
 
-  // Debounced search
-  useEffect(() => {
-    const t = setTimeout(() => load(search), 300);
-    return () => clearTimeout(t);
-  }, [search, load]);
+  const handleDelete = async (id: string) => {
+    if (!session?.access_token) return;
+    if (!confirm("Supprimer cette conversation ?")) return;
+    setDeleting(id);
+    try {
+      await deleteConversation(session.access_token, id);
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur de suppression");
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   if (authLoading || (!user && !error)) {
     return (
       <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh" }}>
-        <div style={{ color: "#a39e97", fontSize: 14 }}>Chargement...</div>
+        <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Chargement...</div>
       </div>
     );
   }
 
-  const grouped = groupByDate(discussions);
+  const filtered = search
+    ? conversations.filter((c) => (c.title || "").toLowerCase().includes(search.toLowerCase()))
+    : conversations;
+
+  const grouped = groupByDate(filtered);
 
   return (
     <div style={{ maxWidth: 960, margin: "0 auto", padding: "48px 24px" }}>
       {/* Header */}
       <div style={{ marginBottom: 32 }}>
-        <h1
-          style={{
-            fontSize: 28,
-            fontWeight: 700,
-            color: "#1a1a1a",
-            marginBottom: 6,
-          }}
-        >
+        <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text)", marginBottom: 6 }}>
           Discussions
         </h1>
-        <p style={{ fontSize: 14, color: "#a39e97" }}>
+        <p style={{ fontSize: 14, color: "var(--text-muted)" }}>
           Vos conversations avec Aura
         </p>
       </div>
@@ -131,14 +137,8 @@ export default function DiscussionsPage() {
       <div style={{ position: "relative", marginBottom: 28 }}>
         <svg
           style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", opacity: 0.35 }}
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+          width="16" height="16" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
         >
           <circle cx="11" cy="11" r="8" />
           <line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -148,74 +148,66 @@ export default function DiscussionsPage() {
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Rechercher dans vos conversations..."
           style={{
-            width: "100%",
-            padding: "14px 16px 14px 44px",
-            fontSize: 14,
-            borderRadius: 12,
-            border: "1px solid #ddd6cc",
-            background: "#ffffff",
-            color: "#1a1a1a",
-            outline: "none",
+            width: "100%", padding: "14px 16px 14px 44px", fontSize: 14,
+            borderRadius: 12, border: "1px solid var(--border)",
+            background: "var(--surface)", color: "var(--text)", outline: "none",
             transition: "border-color 0.2s",
           }}
-          onFocus={(e) => (e.target.style.borderColor = "#e36b2b")}
-          onBlur={(e) => (e.target.style.borderColor = "#ddd6cc")}
+          onFocus={(e) => (e.target.style.borderColor = "var(--orange)")}
+          onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
         />
       </div>
 
       {/* Error */}
       {error && (
-        <div
-          style={{
-            padding: "12px 16px",
-            borderRadius: 12,
-            background: "rgba(255,71,87,0.1)",
-            border: "1px solid rgba(255,71,87,0.2)",
-            color: "#ff6b6b",
-            fontSize: 13,
-            marginBottom: 24,
-          }}
-        >
+        <div style={{
+          padding: "12px 16px", borderRadius: 12,
+          background: "rgba(255,71,87,0.1)", border: "1px solid rgba(255,71,87,0.2)",
+          color: "#ff6b6b", fontSize: 13, marginBottom: 24,
+        }}>
           {error}
         </div>
       )}
 
       {/* Loading */}
       {loading && (
-        <div style={{ textAlign: "center", padding: 60, color: "#a39e97", fontSize: 14 }}>
+        <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)", fontSize: 14 }}>
           Chargement des conversations...
         </div>
       )}
 
       {/* Empty */}
-      {!loading && !error && discussions.length === 0 && (
-        <div style={{ textAlign: "center", padding: 60, background: "#ffffff", border: "1px solid #e8e2d9", borderRadius: 16 }}>
+      {!loading && !error && filtered.length === 0 && (
+        <div style={{ textAlign: "center", padding: 60, background: "var(--surface)", border: "1px solid var(--border-light)", borderRadius: 16 }}>
           <div style={{ fontSize: 40, marginBottom: 16, opacity: 0.3 }}>💬</div>
-          <p style={{ color: "#6b6560", fontSize: 14 }}>Aucune discussion</p>
-          <p style={{ color: "#a39e97", fontSize: 12, marginTop: 4 }}>
+          <p style={{ color: "var(--text-secondary)", fontSize: 14 }}>Aucune discussion</p>
+          <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 4 }}>
             Vos conversations avec Aura apparaitront ici
           </p>
         </div>
       )}
 
-      {/* Discussions grouped by date */}
+      {/* Conversations grouped by date */}
       {Object.entries(grouped).map(([date, items]) => (
         <div key={date} style={{ marginBottom: 28 }}>
-          <h2
-            style={{
-              fontSize: 11,
-              fontWeight: 600,
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              color: "#a39e97",
-              marginBottom: 8,
-            }}
-          >
+          <h2 style={{
+            fontSize: 11, fontWeight: 600, textTransform: "uppercase",
+            letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 8,
+          }}>
             {date}
           </h2>
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {items.map((d) => (
-              <DiscussionItem key={d.id} discussion={d} onClick={() => router.push("/")} />
+            {items.map((c) => (
+              <ConversationItem
+                key={c.id}
+                conversation={c}
+                onClick={() => {
+                  auraSession.loadConversation(c.id);
+                  router.push("/");
+                }}
+                onDelete={() => handleDelete(c.id)}
+                isDeleting={deleting === c.id}
+              />
             ))}
           </div>
         </div>
@@ -224,9 +216,11 @@ export default function DiscussionsPage() {
   );
 }
 
-function DiscussionItem({ discussion, onClick }: { discussion: Discussion; onClick: () => void }) {
+function ConversationItem({ conversation, onClick, onDelete, isDeleting }: {
+  conversation: Conversation; onClick: () => void; onDelete: () => void; isDeleting: boolean;
+}) {
   const [hovered, setHovered] = useState(false);
-  const ts = discussion.last_message_at || discussion.created_at;
+  const ts = conversation.updated_at || conversation.created_at;
 
   return (
     <div
@@ -234,56 +228,53 @@ function DiscussionItem({ discussion, onClick }: { discussion: Discussion; onCli
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 14,
-        padding: "12px 14px",
-        borderRadius: 12,
-        cursor: "pointer",
-        background: hovered ? "#ffffff" : "transparent",
+        display: "flex", alignItems: "center", gap: 14,
+        padding: "12px 14px", borderRadius: 12, cursor: "pointer",
+        background: hovered ? "var(--surface)" : "transparent",
         transition: "background 0.15s",
       }}
     >
-      {/* Chat icon */}
-      <div
-        style={{
-          width: 40,
-          height: 40,
-          borderRadius: 10,
-          background: "rgba(255,107,53,0.1)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-        }}
-      >
-        <svg
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="#ff8c42"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
+      <div style={{
+        width: 40, height: 40, borderRadius: 10,
+        background: "rgba(255,107,53,0.1)",
+        display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+      }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+          stroke="#ff8c42" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
       </div>
 
-      {/* Content */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 500, color: "#1a1a1a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {discussion.title || "Conversation sans titre"}
+        <div style={{
+          fontSize: 13, fontWeight: 500, color: "var(--text)",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+          {conversation.title || "Conversation sans titre"}
         </div>
-        <div style={{ fontSize: 12, color: "#a39e97", marginTop: 2 }}>
-          Dernier message {formatRelativeTime(ts)}
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+          {formatRelativeTime(ts)}
         </div>
       </div>
 
-      {/* Time */}
-      <div style={{ fontSize: 11, color: "#a39e97", flexShrink: 0 }}>
-        {formatTime(ts)}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          {formatTime(ts)}
+        </span>
+        {hovered && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            disabled={isDeleting}
+            style={{
+              padding: "4px 8px", fontSize: 11, fontWeight: 500,
+              color: "#d44040", background: "rgba(212,64,64,0.08)",
+              border: "1px solid rgba(212,64,64,0.15)", borderRadius: 6,
+              cursor: isDeleting ? "wait" : "pointer", opacity: isDeleting ? 0.5 : 1,
+            }}
+          >
+            {isDeleting ? "..." : "Suppr."}
+          </button>
+        )}
       </div>
     </div>
   );

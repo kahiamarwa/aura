@@ -7,6 +7,7 @@ import {
   fetchIntegrations,
   disconnectIntegration,
   handleOAuthCallback,
+  callEdgeFunction,
   getGmailOAuthUrl,
   getOutlookOAuthUrl,
   getHubSpotOAuthUrl,
@@ -14,8 +15,11 @@ import {
   type Integration,
   type Provider,
 } from "@/lib/integrations";
+import { fetchSettings, updateSettings } from "@/lib/api";
+import { useTheme } from "@/context/ThemeContext";
+import { supabase } from "@/lib/supabase";
 
-const OAUTH_URLS: Record<Provider, () => string> = {
+const OAUTH_URLS: Partial<Record<Provider, () => string>> = {
   gmail: getGmailOAuthUrl,
   outlook: getOutlookOAuthUrl,
   hubspot: getHubSpotOAuthUrl,
@@ -36,16 +40,19 @@ const SECTIONS: { id: Section; label: string }[] = [
 export default function SettingsPage() {
   const router = useRouter();
   const { user, session, loading: authLoading, signOut } = useAuthContext();
+  const { theme: currentTheme, setTheme: applyTheme } = useTheme();
   const [activeSection, setActiveSection] = useState<Section>("general");
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [loading, setLoading] = useState(true);
   const [disconnecting, setDisconnecting] = useState<Provider | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
 
   // Local settings state
   const [langue, setLangue] = useState("fr");
-  const [theme, setTheme] = useState("light");
+  const [theme, setThemeLocal] = useState("light");
   const [timezone, setTimezone] = useState("Europe/Paris");
   const [notifications, setNotifications] = useState(true);
   const [wakeWord, setWakeWord] = useState(true);
@@ -61,6 +68,149 @@ export default function SettingsPage() {
   const [langueTranscription, setLangueTranscription] = useState("fr");
 
   const [connecting, setConnecting] = useState(false);
+
+  // Logo upload state
+  const [logoPath, setLogoPath] = useState<string | null>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+
+  // Twilio config form
+  const [showTwilioForm, setShowTwilioForm] = useState(false);
+  const [twilioSid, setTwilioSid] = useState("");
+  const [twilioToken, setTwilioToken] = useState("");
+  const [twilioPhone, setTwilioPhone] = useState("");
+  const [twilioSaving, setTwilioSaving] = useState(false);
+
+  // WhatsApp config form
+  const [showWhatsappForm, setShowWhatsappForm] = useState(false);
+  const [waToken, setWaToken] = useState("");
+  const [waPhoneId, setWaPhoneId] = useState("");
+  const [waSaving, setWaSaving] = useState(false);
+  const [waMethod, setWaMethod] = useState<"embedded" | "manual">("embedded");
+  const [fbReady, setFbReady] = useState(false);
+
+  // Theme change handler — applies immediately + updates local state
+  const handleThemeChange = useCallback((value: string) => {
+    setThemeLocal(value);
+    if (value === "light" || value === "dark") {
+      applyTheme(value);
+    }
+  }, [applyTheme]);
+
+  // Logo upload handler
+  const handleLogoUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user?.id || !session?.access_token) return;
+    if (file.size > 500 * 1024) {
+      setError("Logo trop volumineux (max 500 Ko)");
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      setError("Format invalide — utilisez PNG ou JPG");
+      return;
+    }
+    setLogoUploading(true);
+    setError(null);
+    try {
+      const path = `${user.id}/logo${file.name.substring(file.name.lastIndexOf("."))}`;
+      const { error: upErr } = await supabase.storage.from("logos").upload(path, file, { upsert: true });
+      if (upErr) throw upErr;
+      setLogoPath(path);
+      setLogoPreview(URL.createObjectURL(file));
+      await updateSettings(session.access_token, { logo_path: path });
+      setSuccessMsg("Logo sauvegarde");
+      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur upload logo");
+    } finally {
+      setLogoUploading(false);
+    }
+  }, [user?.id, session?.access_token]);
+
+  const handleLogoDelete = useCallback(async () => {
+    if (!logoPath || !session?.access_token) return;
+    try {
+      await supabase.storage.from("logos").remove([logoPath]);
+      await updateSettings(session.access_token, { logo_path: null });
+      setLogoPath(null);
+      setLogoPreview(null);
+      setSuccessMsg("Logo supprime");
+      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur suppression logo");
+    }
+  }, [logoPath, session?.access_token]);
+
+  // Load settings from backend on mount
+  useEffect(() => {
+    if (!session?.access_token) return;
+    fetchSettings(session.access_token)
+      .then((data) => {
+        if (data.langue) setLangue(data.langue);
+        if (data.theme) {
+          setThemeLocal(data.theme);
+          if (data.theme === "light" || data.theme === "dark") {
+            applyTheme(data.theme);
+          }
+        }
+        if (data.timezone) setTimezone(data.timezone);
+        if (typeof data.notifications === "boolean") setNotifications(data.notifications);
+        if (typeof data.wake_word === "boolean") setWakeWord(data.wake_word);
+        if (data.voix) setVoix(data.voix);
+        if (data.vitesse) setVitesse(data.vitesse);
+        if (typeof data.barge_in === "boolean") setBargeIn(data.barge_in);
+        if (typeof data.continuite === "boolean") setContinuite(data.continuite);
+        if (typeof data.son_confirmation === "boolean") setSonConfirmation(data.son_confirmation);
+        if (typeof data.passive_active === "boolean") setPassiveActive(data.passive_active);
+        if (typeof data.resumes_auto === "boolean") setResumesAuto(data.resumes_auto);
+        if (data.passive_timeout) setPassiveTimeout(data.passive_timeout);
+        if (data.retention) setRetention(data.retention);
+        if (data.langue_transcription) setLangueTranscription(data.langue_transcription);
+        if (data.logo_path) {
+          setLogoPath(data.logo_path);
+          // Public bucket — build direct URL
+          const publicUrl = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/logos/${data.logo_path}`;
+          setLogoPreview(publicUrl);
+        }
+        setSettingsLoaded(true);
+      })
+      .catch((err) => {
+        console.error("[settings] Failed to load settings:", err);
+        setSettingsLoaded(true); // use defaults
+      });
+  }, [session?.access_token, applyTheme]);
+
+  // Save settings to backend
+  const handleSaveSettings = async () => {
+    if (!session?.access_token) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await updateSettings(session.access_token, {
+        langue,
+        theme,
+        timezone,
+        notifications,
+        wake_word: wakeWord,
+        voix,
+        vitesse,
+        barge_in: bargeIn,
+        continuite,
+        son_confirmation: sonConfirmation,
+        passive_active: passiveActive,
+        resumes_auto: resumesAuto,
+        passive_timeout: passiveTimeout,
+        retention,
+        langue_transcription: langueTranscription,
+      });
+      setSuccessMsg("Parametres sauvegardes");
+      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur lors de la sauvegarde");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // Process OAuth callback from popup
   const processOAuthCallback = useCallback(
@@ -135,8 +285,222 @@ export default function SettingsPage() {
   }, [session?.access_token]);
 
   const handleConnect = (provider: Provider) => {
-    const url = OAUTH_URLS[provider]();
-    window.open(url, `${provider}-oauth`, "width=500,height=650,left=200,top=100");
+    if (provider === "twilio") {
+      setShowTwilioForm(true);
+      return;
+    }
+    if (provider === "whatsapp") {
+      setShowWhatsappForm(true);
+      return;
+    }
+    const urlFn = OAUTH_URLS[provider];
+    if (urlFn) {
+      window.open(urlFn(), `${provider}-oauth`, "width=500,height=650,left=200,top=100");
+    }
+  };
+
+  const handleTwilioSave = async () => {
+    if (!session?.access_token || !twilioSid || !twilioToken || !twilioPhone) return;
+    setTwilioSaving(true);
+    setError(null);
+    try {
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+      const res = await fetch(`${supabaseUrl}/functions/v1/send-sms`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          action: "save-config",
+          account_sid: twilioSid,
+          auth_token: twilioToken,
+          phone_number: twilioPhone,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Erreur");
+      setIntegrations((prev) =>
+        prev.map((i) =>
+          i.provider === "twilio"
+            ? { ...i, connected: true, detail: data.phone_number }
+            : i
+        )
+      );
+      setShowTwilioForm(false);
+      setTwilioSid("");
+      setTwilioToken("");
+      setTwilioPhone("");
+      setSuccessMsg("Twilio connecte avec succes");
+      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur de configuration Twilio");
+    } finally {
+      setTwilioSaving(false);
+    }
+  };
+
+  const handleWhatsappSave = async () => {
+    if (!session?.access_token || !waToken || !waPhoneId) return;
+    setWaSaving(true);
+    setError(null);
+    try {
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+      const res = await fetch(`${supabaseUrl}/functions/v1/send-whatsapp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          action: "save-config",
+          access_token: waToken,
+          phone_number_id: waPhoneId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Erreur");
+      setIntegrations((prev) =>
+        prev.map((i) =>
+          i.provider === "whatsapp"
+            ? { ...i, connected: true, detail: data.display_phone }
+            : i
+        )
+      );
+      setShowWhatsappForm(false);
+      setWaToken("");
+      setWaPhoneId("");
+      setSuccessMsg("WhatsApp connecte avec succes");
+      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur de configuration WhatsApp");
+    } finally {
+      setWaSaving(false);
+    }
+  };
+
+  // Load Facebook JS SDK for WhatsApp Embedded Signup
+  useEffect(() => {
+    if (activeSection !== "connectors") return;
+    // deno-lint-ignore no-explicit-any
+    if ((window as any).FB) { setFbReady(true); return; }
+
+    (window as any).fbAsyncInit = function () {
+      (window as any).FB.init({
+        appId: process.env.NEXT_PUBLIC_META_APP_ID,
+        cookie: true,
+        xfbml: false,
+        version: "v22.0",
+      });
+      setFbReady(true);
+    };
+
+    const script = document.createElement("script");
+    script.src = "https://connect.facebook.net/en_US/sdk.js";
+    script.async = true;
+    script.defer = true;
+    document.body.appendChild(script);
+  }, [activeSection]);
+
+  // WhatsApp Embedded Signup via Facebook Login
+  const handleWhatsappEmbeddedSignup = () => {
+    const FB = (window as any).FB;
+    if (!FB || !fbReady) {
+      setError("Facebook SDK non charge. Veuillez reessayer.");
+      return;
+    }
+    if (!process.env.NEXT_PUBLIC_META_CONFIG_ID) {
+      setError("Configuration Meta manquante (NEXT_PUBLIC_META_CONFIG_ID).");
+      return;
+    }
+
+    // FB.login requires HTTPS — check before calling
+    if (window.location.protocol !== "https:") {
+      setError("Facebook Login requiert HTTPS. Utilisez l'onglet 'Configuration manuelle' en dev local, ou accedez via HTTPS.");
+      return;
+    }
+
+    setConnecting(true);
+    setError(null);
+
+    // Capture WABA info from Embedded Signup session event
+    let signupInfo: { waba_id?: string; phone_number_id?: string } = {};
+
+    const messageListener = (event: MessageEvent) => {
+      if (
+        event.origin !== "https://www.facebook.com" &&
+        event.origin !== "https://web.facebook.com"
+      ) return;
+
+      try {
+        const data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+        if (data.type === "WA_EMBEDDED_SIGNUP") {
+          signupInfo = data.data || {};
+          console.log("[WhatsApp] Embedded Signup info received:", signupInfo);
+        }
+      } catch {
+        // Ignore non-JSON messages
+      }
+    };
+    window.addEventListener("message", messageListener);
+
+    // FB.login callback must be a plain function (not async)
+    FB.login(
+      (response: any) => {
+        if (response.authResponse?.code) {
+          const code = response.authResponse.code;
+
+          // Wait briefly for the WA_EMBEDDED_SIGNUP message event (may arrive after FB.login callback)
+          const sendToBackend = () => {
+            window.removeEventListener("message", messageListener);
+            console.log("[WhatsApp] Sending to backend:", { waba_id: signupInfo.waba_id, phone_number_id: signupInfo.phone_number_id });
+            callEdgeFunction(
+              "send-whatsapp",
+              {
+                action: "oauth-callback",
+                code,
+                waba_id: signupInfo.waba_id,
+                phone_number_id: signupInfo.phone_number_id,
+              },
+              session!.access_token
+            )
+              .then(() => fetchIntegrations(session!.access_token))
+              .then((updated) => {
+                setIntegrations(updated);
+                setShowWhatsappForm(false);
+                setSuccessMsg("WhatsApp connecte avec succes");
+                setTimeout(() => setSuccessMsg(null), 4000);
+              })
+              .catch((err) => {
+                setError(err instanceof Error ? err.message : "Erreur de connexion WhatsApp");
+              })
+              .finally(() => setConnecting(false));
+          };
+
+          // If signup info already captured, send immediately; otherwise wait 1s
+          if (signupInfo.waba_id && signupInfo.phone_number_id) {
+            sendToBackend();
+          } else {
+            console.log("[WhatsApp] Waiting for Embedded Signup session event...");
+            setTimeout(sendToBackend, 1000);
+          }
+        } else {
+          window.removeEventListener("message", messageListener);
+          setError("Connexion WhatsApp annulee.");
+          setConnecting(false);
+        }
+      },
+      {
+        config_id: process.env.NEXT_PUBLIC_META_CONFIG_ID,
+        response_type: "code",
+        override_default_response_type: true,
+        extras: {
+          setup: {},
+          featureType: "",
+          sessionInfoVersion: 2,
+        },
+      }
+    );
   };
 
   const handleDisconnect = async (provider: Provider) => {
@@ -167,14 +531,14 @@ export default function SettingsPage() {
     return (
       <div
         className="flex items-center justify-center"
-        style={{ background: "#faf6f1", height: "100vh" }}
+        style={{ background: "var(--bg-warm)", height: "100vh" }}
       >
         <div
           className="h-16 w-16 animate-spin rounded-full"
           style={{
-            border: "3px solid #ddd6cc",
-            borderTopColor: "#e36b2b",
-            borderRightColor: "#f08c42",
+            border: "3px solid var(--border)",
+            borderTopColor: "var(--orange)",
+            borderRightColor: "var(--orange-light)",
           }}
         />
       </div>
@@ -186,7 +550,7 @@ export default function SettingsPage() {
       style={{
         display: "flex",
         height: "100vh",
-        background: "#faf6f1",
+        background: "var(--bg-warm)",
       }}
     >
       {/* Left nav */}
@@ -194,7 +558,7 @@ export default function SettingsPage() {
         style={{
           width: 220,
           minWidth: 220,
-          borderRight: "1px solid #e8e2d9",
+          borderRight: "1px solid var(--border-light)",
           padding: "32px 0",
           display: "flex",
           flexDirection: "column",
@@ -205,7 +569,7 @@ export default function SettingsPage() {
           style={{
             fontSize: 20,
             fontWeight: 700,
-            color: "#1a1a1a",
+            color: "var(--text)",
             padding: "0 24px 24px",
             margin: 0,
           }}
@@ -225,22 +589,22 @@ export default function SettingsPage() {
                 padding: "10px 24px",
                 fontSize: 14,
                 fontWeight: isActive ? 600 : 400,
-                color: isActive ? "#e36b2b" : "#6b6560",
+                color: isActive ? "var(--orange)" : "var(--text-secondary)",
                 background: "transparent",
                 border: "none",
-                borderLeft: isActive ? "2px solid #e36b2b" : "2px solid transparent",
+                borderLeft: isActive ? "2px solid var(--orange)" : "2px solid transparent",
                 cursor: "pointer",
                 transition: "all 0.15s ease",
               }}
               onMouseEnter={(e) => {
                 if (!isActive) {
-                  e.currentTarget.style.color = "#1a1a1a";
-                  e.currentTarget.style.background = "rgba(0,0,0,0.02)";
+                  e.currentTarget.style.color = "var(--text)";
+                  e.currentTarget.style.background = "var(--surface-hover)";
                 }
               }}
               onMouseLeave={(e) => {
                 if (!isActive) {
-                  e.currentTarget.style.color = "#6b6560";
+                  e.currentTarget.style.color = "var(--text-secondary)";
                   e.currentTarget.style.background = "transparent";
                 }
               }}
@@ -269,7 +633,7 @@ export default function SettingsPage() {
               borderRadius: 10,
               background: "rgba(45,158,106,0.08)",
               border: "1px solid rgba(45,158,106,0.2)",
-              color: "#2d9e6a",
+              color: "var(--green)",
               fontSize: 14,
             }}
           >
@@ -286,7 +650,7 @@ export default function SettingsPage() {
               borderRadius: 10,
               background: "rgba(212,64,64,0.06)",
               border: "1px solid rgba(212,64,64,0.15)",
-              color: "#d44040",
+              color: "var(--red)",
               fontSize: 14,
               display: "flex",
               justifyContent: "space-between",
@@ -299,7 +663,7 @@ export default function SettingsPage() {
               style={{
                 background: "none",
                 border: "none",
-                color: "#d44040",
+                color: "var(--red)",
                 cursor: "pointer",
                 fontSize: 12,
                 textDecoration: "underline",
@@ -328,10 +692,9 @@ export default function SettingsPage() {
               label="Theme"
               description="Apparence de l'application"
             >
-              <Select value={theme} onChange={setTheme} options={[
+              <Select value={theme} onChange={handleThemeChange} options={[
                 { value: "light", label: "Clair" },
                 { value: "dark", label: "Sombre" },
-                { value: "auto", label: "Systeme" },
               ]} />
             </SettingRow>
             <SettingRow
@@ -351,6 +714,73 @@ export default function SettingsPage() {
             >
               <Toggle checked={notifications} onChange={setNotifications} />
             </SettingRow>
+
+            {/* Logo upload for reports */}
+            <div style={{
+              background: "var(--surface)",
+              border: "1px solid var(--border-light)",
+              borderRadius: 12,
+              padding: 20,
+              marginTop: 16,
+            }}>
+              <h3 style={{ fontSize: 15, fontWeight: 600, color: "var(--text)", margin: "0 0 4px" }}>
+                Logo pour les rapports
+              </h3>
+              <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "0 0 12px" }}>
+                Ce logo sera automatiquement insere sur vos rapports PDF
+              </p>
+              <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                {(logoPreview || logoPath) && (
+                  <div style={{
+                    width: 64, height: 64, borderRadius: 8,
+                    border: "1px solid var(--border-light)",
+                    overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center",
+                    background: "var(--bg)",
+                  }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={logoPreview || ""}
+                      alt="Logo"
+                      style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
+                    />
+                  </div>
+                )}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <label style={{
+                    padding: "8px 16px", borderRadius: 8,
+                    border: "1px solid var(--border)",
+                    background: "var(--surface)",
+                    color: "var(--text-secondary)",
+                    fontSize: 13, fontWeight: 500, cursor: "pointer",
+                    display: "inline-block", textAlign: "center",
+                    opacity: logoUploading ? 0.5 : 1,
+                  }}>
+                    {logoUploading ? "Upload..." : logoPath ? "Changer" : "Choisir un logo"}
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={handleLogoUpload}
+                      disabled={logoUploading}
+                      style={{ display: "none" }}
+                    />
+                  </label>
+                  {logoPath && (
+                    <button
+                      onClick={handleLogoDelete}
+                      style={{
+                        padding: "6px 12px", borderRadius: 8,
+                        border: "1px solid var(--border)",
+                        background: "transparent",
+                        color: "var(--red, #e74c3c)",
+                        fontSize: 12, cursor: "pointer",
+                      }}
+                    >
+                      Supprimer
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -360,8 +790,8 @@ export default function SettingsPage() {
             <SectionTitle>Compte</SectionTitle>
             <div
               style={{
-                background: "#ffffff",
-                border: "1px solid #e8e2d9",
+                background: "var(--surface)",
+                border: "1px solid var(--border-light)",
                 borderRadius: 12,
                 padding: 20,
                 marginBottom: 16,
@@ -369,10 +799,10 @@ export default function SettingsPage() {
             >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
-                  <p style={{ fontSize: 15, fontWeight: 600, color: "#1a1a1a", margin: 0 }}>
+                  <p style={{ fontSize: 15, fontWeight: 600, color: "var(--text)", margin: 0 }}>
                     {user.email}
                   </p>
-                  <p style={{ fontSize: 13, color: "#a39e97", margin: "4px 0 0" }}>
+                  <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "4px 0 0" }}>
                     {user.user_metadata?.full_name || ""}
                   </p>
                 </div>
@@ -381,21 +811,21 @@ export default function SettingsPage() {
                   style={{
                     padding: "8px 16px",
                     borderRadius: 8,
-                    border: "1px solid #ddd6cc",
-                    background: "#ffffff",
-                    color: "#6b6560",
+                    border: "1px solid var(--border)",
+                    background: "var(--surface)",
+                    color: "var(--text-secondary)",
                     fontSize: 13,
                     fontWeight: 500,
                     cursor: "pointer",
                     transition: "all 0.15s ease",
                   }}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = "#d44040";
-                    e.currentTarget.style.color = "#d44040";
+                    e.currentTarget.style.borderColor = "var(--red)";
+                    e.currentTarget.style.color = "var(--red)";
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = "#ddd6cc";
-                    e.currentTarget.style.color = "#6b6560";
+                    e.currentTarget.style.borderColor = "var(--border)";
+                    e.currentTarget.style.color = "var(--text-secondary)";
                   }}
                 >
                   Deconnexion
@@ -518,7 +948,7 @@ export default function SettingsPage() {
         {activeSection === "connectors" && (
           <div>
             <SectionTitle>Connecteurs</SectionTitle>
-            <p style={{ fontSize: 14, color: "#6b6560", marginBottom: 20 }}>
+            <p style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 20 }}>
               Connectez vos outils pour qu&apos;Aura puisse agir en votre nom
             </p>
 
@@ -528,8 +958,8 @@ export default function SettingsPage() {
                   className="h-10 w-10 animate-spin rounded-full"
                   style={{
                     border: "3px solid #ddd6cc",
-                    borderTopColor: "#e36b2b",
-                    borderRightColor: "#f08c42",
+                    borderTopColor: "var(--orange)",
+                    borderRightColor: "var(--orange-light)",
                   }}
                 />
               </div>
@@ -547,31 +977,314 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* SMS info */}
-            <div
-              style={{
-                marginTop: 20,
-                padding: 16,
-                borderRadius: 12,
-                background: "#ffffff",
-                border: "1px solid #e8e2d9",
-                borderLeft: "3px solid #e36b2b",
-                display: "flex",
-                alignItems: "flex-start",
-                gap: 12,
-              }}
-            >
-              <span style={{ fontSize: 24 }}>SMS</span>
-              <div>
-                <h3 style={{ fontSize: 14, fontWeight: 600, color: "#1a1a1a", margin: 0 }}>
-                  SMS (Twilio)
+            {/* Twilio config form */}
+            {showTwilioForm && (
+              <div
+                style={{
+                  marginTop: 16,
+                  padding: 20,
+                  borderRadius: 12,
+                  background: "var(--surface)",
+                  border: "1px solid var(--border-light)",
+                  borderLeft: "3px solid #e36b2b",
+                }}
+              >
+                <h3 style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", margin: "0 0 16px" }}>
+                  Configuration Twilio
                 </h3>
-                <p style={{ fontSize: 13, color: "#6b6560", margin: "4px 0 0", lineHeight: 1.5 }}>
-                  L&apos;envoi de SMS est configure globalement via Twilio.
-                  Dites simplement &quot;Envoie un SMS a...&quot; et Aura s&apos;en charge.
-                </p>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>
+                      Account SID
+                    </label>
+                    <input
+                      type="text"
+                      value={twilioSid}
+                      onChange={(e) => setTwilioSid(e.target.value)}
+                      placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                      style={{
+                        width: "100%",
+                        padding: "8px 12px",
+                        borderRadius: 8,
+                        border: "1px solid var(--border-light)",
+                        background: "var(--bg)",
+                        color: "var(--text)",
+                        fontSize: 13,
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>
+                      Auth Token
+                    </label>
+                    <input
+                      type="password"
+                      value={twilioToken}
+                      onChange={(e) => setTwilioToken(e.target.value)}
+                      placeholder="Votre Auth Token Twilio"
+                      style={{
+                        width: "100%",
+                        padding: "8px 12px",
+                        borderRadius: 8,
+                        border: "1px solid var(--border-light)",
+                        background: "var(--bg)",
+                        color: "var(--text)",
+                        fontSize: 13,
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", display: "block", marginBottom: 4 }}>
+                      Numero de telephone Twilio
+                    </label>
+                    <input
+                      type="text"
+                      value={twilioPhone}
+                      onChange={(e) => setTwilioPhone(e.target.value)}
+                      placeholder="+33612345678"
+                      style={{
+                        width: "100%",
+                        padding: "8px 12px",
+                        borderRadius: 8,
+                        border: "1px solid var(--border-light)",
+                        background: "var(--bg)",
+                        color: "var(--text)",
+                        fontSize: 13,
+                      }}
+                    />
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                    <button
+                      onClick={handleTwilioSave}
+                      disabled={twilioSaving || !twilioSid || !twilioToken || !twilioPhone}
+                      style={{
+                        padding: "8px 20px",
+                        borderRadius: 8,
+                        border: "none",
+                        background: "#e36b2b",
+                        color: "white",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: twilioSaving ? "wait" : "pointer",
+                        opacity: twilioSaving || !twilioSid || !twilioToken || !twilioPhone ? 0.6 : 1,
+                      }}
+                    >
+                      {twilioSaving ? "Verification..." : "Connecter"}
+                    </button>
+                    <button
+                      onClick={() => setShowTwilioForm(false)}
+                      style={{
+                        padding: "8px 20px",
+                        borderRadius: 8,
+                        border: "1px solid var(--border-light)",
+                        background: "transparent",
+                        color: "var(--text-secondary)",
+                        fontSize: 13,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Annuler
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
+
+            {/* ── WhatsApp config form (dual method: Embedded Signup + Manual) ── */}
+            {showWhatsappForm && (
+              <div
+                style={{
+                  marginTop: 16,
+                  padding: 20,
+                  borderRadius: 12,
+                  border: "1px solid var(--border-light)",
+                  background: "var(--surface)",
+                }}
+              >
+                <h4 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 600, color: "var(--text)" }}>
+                  Configurer WhatsApp Business
+                </h4>
+
+                {/* ── Tab selector ── */}
+                <div style={{ display: "flex", gap: 0, marginBottom: 16, borderBottom: "1px solid var(--border-light)" }}>
+                  <button
+                    onClick={() => setWaMethod("embedded")}
+                    style={{
+                      padding: "8px 16px",
+                      fontSize: 13,
+                      fontWeight: waMethod === "embedded" ? 600 : 400,
+                      color: waMethod === "embedded" ? "#25D366" : "var(--text-secondary)",
+                      background: "transparent",
+                      border: "none",
+                      borderBottom: waMethod === "embedded" ? "2px solid #25D366" : "2px solid transparent",
+                      cursor: "pointer",
+                      marginBottom: -1,
+                    }}
+                  >
+                    Connexion Facebook
+                  </button>
+                  <button
+                    onClick={() => setWaMethod("manual")}
+                    style={{
+                      padding: "8px 16px",
+                      fontSize: 13,
+                      fontWeight: waMethod === "manual" ? 600 : 400,
+                      color: waMethod === "manual" ? "#25D366" : "var(--text-secondary)",
+                      background: "transparent",
+                      border: "none",
+                      borderBottom: waMethod === "manual" ? "2px solid #25D366" : "2px solid transparent",
+                      cursor: "pointer",
+                      marginBottom: -1,
+                    }}
+                  >
+                    Configuration manuelle
+                  </button>
+                </div>
+
+                {/* ── Tab: Embedded Signup ── */}
+                {waMethod === "embedded" && (
+                  <div>
+                    <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--text-muted)" }}>
+                      Connectez votre compte WhatsApp Business en un clic via Facebook.
+                      Aucune configuration manuelle requise.
+                    </p>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        onClick={handleWhatsappEmbeddedSignup}
+                        disabled={connecting || !fbReady}
+                        style={{
+                          padding: "10px 24px",
+                          borderRadius: 8,
+                          border: "none",
+                          background: "#1877F2",
+                          color: "white",
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: connecting ? "wait" : "pointer",
+                          opacity: connecting || !fbReady ? 0.6 : 1,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
+                      >
+                        {connecting ? "Connexion en cours..." : "Se connecter avec Facebook"}
+                      </button>
+                      <button
+                        onClick={() => setShowWhatsappForm(false)}
+                        style={{
+                          padding: "8px 20px",
+                          borderRadius: 8,
+                          border: "1px solid var(--border-light)",
+                          background: "transparent",
+                          color: "var(--text-secondary)",
+                          fontSize: 13,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Annuler
+                      </button>
+                    </div>
+                    {!fbReady && (
+                      <p style={{ margin: "8px 0 0", fontSize: 11, color: "var(--text-muted)" }}>
+                        Chargement du SDK Facebook...
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* ── Tab: Manual config ── */}
+                {waMethod === "manual" && (
+                  <div>
+                    <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--text-muted)" }}>
+                      Pour les utilisateurs avances. Entrez vos identifiants depuis le{" "}
+                      <a
+                        href="https://developers.facebook.com/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ color: "var(--orange)" }}
+                      >
+                        Meta for Developers Dashboard
+                      </a>.
+                    </p>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                      <div>
+                        <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", marginBottom: 4 }}>
+                          Access Token (Permanent)
+                        </label>
+                        <input
+                          type="password"
+                          placeholder="EAAxxxxxxx..."
+                          value={waToken}
+                          onChange={(e) => setWaToken(e.target.value)}
+                          style={{
+                            width: "100%",
+                            padding: "8px 12px",
+                            borderRadius: 8,
+                            border: "1px solid var(--border-light)",
+                            background: "var(--bg)",
+                            color: "var(--text)",
+                            fontSize: 13,
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", marginBottom: 4 }}>
+                          Phone Number ID
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="1234567890..."
+                          value={waPhoneId}
+                          onChange={(e) => setWaPhoneId(e.target.value)}
+                          style={{
+                            width: "100%",
+                            padding: "8px 12px",
+                            borderRadius: 8,
+                            border: "1px solid var(--border-light)",
+                            background: "var(--bg)",
+                            color: "var(--text)",
+                            fontSize: 13,
+                          }}
+                        />
+                      </div>
+                      <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                        <button
+                          onClick={handleWhatsappSave}
+                          disabled={waSaving || !waToken || !waPhoneId}
+                          style={{
+                            padding: "8px 20px",
+                            borderRadius: 8,
+                            border: "none",
+                            background: "#25D366",
+                            color: "white",
+                            fontSize: 13,
+                            fontWeight: 600,
+                            cursor: waSaving ? "wait" : "pointer",
+                            opacity: waSaving || !waToken || !waPhoneId ? 0.6 : 1,
+                          }}
+                        >
+                          {waSaving ? "Verification..." : "Connecter"}
+                        </button>
+                        <button
+                          onClick={() => setShowWhatsappForm(false)}
+                          style={{
+                            padding: "8px 20px",
+                            borderRadius: 8,
+                            border: "1px solid var(--border-light)",
+                            background: "transparent",
+                            color: "var(--text-secondary)",
+                            fontSize: 13,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Annuler
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -579,7 +1292,7 @@ export default function SettingsPage() {
         {activeSection === "danger" && (
           <div>
             <SectionTitle>Zone danger</SectionTitle>
-            <p style={{ fontSize: 14, color: "#6b6560", marginBottom: 20 }}>
+            <p style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 20 }}>
               Ces actions sont irreversibles. Procedez avec prudence.
             </p>
 
@@ -618,11 +1331,35 @@ export default function SettingsPage() {
           </div>
         )}
 
+        {/* Save button — visible on all sections except connectors/danger */}
+        {activeSection !== "connectors" && activeSection !== "danger" && activeSection !== "account" && (
+          <div style={{ marginTop: 32, display: "flex", justifyContent: "flex-end" }}>
+            <button
+              onClick={handleSaveSettings}
+              disabled={saving}
+              style={{
+                padding: "10px 28px",
+                borderRadius: 10,
+                border: "none",
+                background: "linear-gradient(135deg, var(--orange), var(--orange-light))",
+                color: "#ffffff",
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: saving ? "not-allowed" : "pointer",
+                opacity: saving ? 0.6 : 1,
+                transition: "all 0.15s ease",
+              }}
+            >
+              {saving ? "Sauvegarde..." : "Sauvegarder"}
+            </button>
+          </div>
+        )}
+
         <p
           style={{
             textAlign: "center",
             fontSize: 12,
-            color: "#a39e97",
+            color: "var(--text-muted)",
             marginTop: 48,
             paddingBottom: 16,
             fontWeight: 500,
@@ -644,7 +1381,7 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
       style={{
         fontSize: 18,
         fontWeight: 700,
-        color: "#1a1a1a",
+        color: "var(--text)",
         margin: "0 0 24px",
       }}
     >
@@ -669,14 +1406,14 @@ function SettingRow({
         alignItems: "center",
         justifyContent: "space-between",
         padding: "16px 0",
-        borderBottom: "1px solid #e8e2d9",
+        borderBottom: "1px solid var(--border-light)",
       }}
     >
       <div style={{ flex: 1, minWidth: 0, paddingRight: 24 }}>
-        <p style={{ fontSize: 14, fontWeight: 500, color: "#1a1a1a", margin: 0 }}>
+        <p style={{ fontSize: 14, fontWeight: 500, color: "var(--text)", margin: 0 }}>
           {label}
         </p>
-        <p style={{ fontSize: 13, color: "#a39e97", margin: "2px 0 0" }}>
+        <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "2px 0 0" }}>
           {description}
         </p>
       </div>
@@ -700,7 +1437,7 @@ function Toggle({
         height: 24,
         borderRadius: 12,
         border: "none",
-        background: checked ? "#e36b2b" : "#ddd6cc",
+        background: checked ? "var(--orange)" : "var(--border)",
         position: "relative",
         cursor: "pointer",
         transition: "background 0.2s ease",
@@ -712,7 +1449,7 @@ function Toggle({
           width: 18,
           height: 18,
           borderRadius: "50%",
-          background: "#fff",
+          background: "var(--surface)",
           position: "absolute",
           top: 3,
           left: checked ? 23 : 3,
@@ -733,6 +1470,7 @@ function Select({
   onChange: (v: string) => void;
   options: { value: string; label: string }[];
 }) {
+  const { theme: selectTheme } = useTheme();
   return (
     <select
       value={value}
@@ -740,13 +1478,14 @@ function Select({
       style={{
         padding: "8px 12px",
         borderRadius: 8,
-        border: "1px solid #ddd6cc",
-        background: "#ffffff",
-        color: "#1a1a1a",
+        border: "1px solid var(--border)",
+        background: "var(--surface)",
+        color: "var(--text)",
         fontSize: 13,
         cursor: "pointer",
         outline: "none",
         minWidth: 140,
+        colorScheme: selectTheme === "dark" ? "dark" : "light",
       }}
     >
       {options.map((o) => (
@@ -777,16 +1516,16 @@ function DangerAction({
         justifyContent: "space-between",
         padding: "16px 20px",
         borderRadius: 12,
-        background: "#ffffff",
-        border: "1px solid #e8e2d9",
+        background: "var(--surface)",
+        border: "1px solid var(--border-light)",
         marginBottom: 12,
       }}
     >
       <div style={{ flex: 1, minWidth: 0, paddingRight: 16 }}>
-        <p style={{ fontSize: 14, fontWeight: 500, color: "#1a1a1a", margin: 0 }}>
+        <p style={{ fontSize: 14, fontWeight: 500, color: "var(--text)", margin: 0 }}>
           {label}
         </p>
-        <p style={{ fontSize: 13, color: "#a39e97", margin: "2px 0 0" }}>
+        <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "2px 0 0" }}>
           {description}
         </p>
       </div>
@@ -797,7 +1536,7 @@ function DangerAction({
           borderRadius: 8,
           border: "1px solid rgba(212,64,64,0.3)",
           background: "rgba(212,64,64,0.06)",
-          color: "#d44040",
+          color: "var(--red)",
           fontSize: 13,
           fontWeight: 500,
           cursor: "pointer",
@@ -840,11 +1579,11 @@ function IntegrationCard({
         justifyContent: "space-between",
         padding: "16px 20px",
         borderRadius: 12,
-        background: "#ffffff",
-        border: "1px solid #e8e2d9",
+        background: "var(--surface)",
+        border: "1px solid var(--border-light)",
         borderLeft: integration.connected
-          ? "3px solid #2d9e6a"
-          : "3px solid #ddd6cc",
+          ? "3px solid var(--green)"
+          : "3px solid var(--border)",
         transition: "all 0.15s ease",
       }}
     >
@@ -852,7 +1591,7 @@ function IntegrationCard({
         <span style={{ fontSize: 28 }}>{integration.icon}</span>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <h3 style={{ fontSize: 14, fontWeight: 600, color: "#1a1a1a", margin: 0 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", margin: 0 }}>
               {integration.label}
             </h3>
             {integration.connected && (
@@ -866,7 +1605,7 @@ function IntegrationCard({
                   fontSize: 11,
                   fontWeight: 600,
                   background: "rgba(45,158,106,0.1)",
-                  color: "#2d9e6a",
+                  color: "var(--green)",
                 }}
               >
                 <span
@@ -874,7 +1613,7 @@ function IntegrationCard({
                     width: 6,
                     height: 6,
                     borderRadius: "50%",
-                    background: "#2d9e6a",
+                    background: "var(--green)",
                     display: "inline-block",
                   }}
                 />
@@ -882,7 +1621,7 @@ function IntegrationCard({
               </span>
             )}
           </div>
-          <p style={{ fontSize: 12, color: "#a39e97", margin: "3px 0 0" }}>
+          <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "3px 0 0" }}>
             {integration.connected && integration.detail
               ? integration.detail
               : integration.description}
@@ -897,9 +1636,9 @@ function IntegrationCard({
           style={{
             padding: "8px 14px",
             borderRadius: 8,
-            border: "1px solid #ddd6cc",
-            background: "#ffffff",
-            color: "#d44040",
+            border: "1px solid var(--border)",
+            background: "var(--surface)",
+            color: "var(--red)",
             fontSize: 12,
             fontWeight: 600,
             cursor: isDisconnecting ? "not-allowed" : "pointer",
@@ -913,8 +1652,8 @@ function IntegrationCard({
             }
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.background = "#ffffff";
-            e.currentTarget.style.borderColor = "#ddd6cc";
+            e.currentTarget.style.background = "var(--surface)";
+            e.currentTarget.style.borderColor = "var(--border)";
           }}
         >
           {isDisconnecting ? "..." : "Deconnecter"}
@@ -927,7 +1666,7 @@ function IntegrationCard({
             borderRadius: 8,
             border: "none",
             background: "linear-gradient(135deg, #e36b2b, #f08c42, #f5a623)",
-            color: "#fff",
+            color: "#ffffff",
             fontSize: 12,
             fontWeight: 700,
             cursor: "pointer",

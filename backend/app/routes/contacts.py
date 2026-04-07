@@ -2,7 +2,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.services.supabase_client import get_supabase_client
+from app.services.supabase_client import get_supabase_client, get_user_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,8 +54,7 @@ async def create_contact(raw_request: Request):
 
     try:
         supabase = get_supabase_client(user_token)
-        user = supabase.auth.get_user()
-        user_id = user.user.id
+        user_id = get_user_id(supabase, user_token)
 
         # Support both "name" and "first_name"+"last_name" from frontend
         name = body.get("name", "")

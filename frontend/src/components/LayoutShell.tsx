@@ -26,7 +26,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
         style={{
           flex: 1,
           overflow: "auto",
-          background: "#faf6f1",
+          background: "var(--bg-warm)",
           minWidth: 0,
         }}
       >

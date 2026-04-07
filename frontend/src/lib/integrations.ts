@@ -6,10 +6,11 @@
 // ============================================================
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 // ─── Types ──────────────────────────────────────────────────
 
-export type Provider = "gmail" | "outlook" | "hubspot" | "slack";
+export type Provider = "gmail" | "outlook" | "hubspot" | "slack" | "twilio" | "whatsapp";
 
 export interface Integration {
   provider: Provider;
@@ -32,19 +33,19 @@ const SLACK_CLIENT_ID = process.env.NEXT_PUBLIC_SLACK_CLIENT_ID || "";
 
 // ─── Edge Function caller ───────────────────────────────────
 
-async function callEdgeFunction(
+export async function callEdgeFunction(
   functionName: string,
   body: Record<string, unknown>,
   accessToken?: string
 ): Promise<Record<string, unknown>> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": `Bearer ${accessToken || SUPABASE_ANON_KEY}`,
   };
-  if (accessToken) {
-    headers["Authorization"] = `Bearer ${accessToken}`;
-  }
 
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/${functionName}`, {
+  const baseUrl = SUPABASE_URL.replace(/\/+$/, "");
+  const res = await fetch(`${baseUrl}/functions/v1/${functionName}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -127,6 +128,7 @@ export function getSlackOAuthUrl(): string {
       "users:read.email",
       "im:write",
       "groups:read",
+      "files:write",
     ].join(","),
     state: "slack",
   });
@@ -166,6 +168,13 @@ export async function handleOAuthCallback(
         accessToken
       );
 
+    case "whatsapp":
+      return callEdgeFunction(
+        "send-whatsapp",
+        { action: "oauth-callback", code },
+        accessToken
+      );
+
     default:
       throw new Error(`Provider inconnu: ${provider}`);
   }
@@ -202,6 +211,20 @@ export async function fetchIntegrations(
       provider: "slack",
       label: "Slack",
       description: "Messages, Canaux, DMs",
+      icon: "💬",
+      connected: false,
+    },
+    {
+      provider: "twilio",
+      label: "SMS (Twilio)",
+      description: "Envoi de SMS",
+      icon: "📱",
+      connected: false,
+    },
+    {
+      provider: "whatsapp",
+      label: "WhatsApp",
+      description: "Messages via WhatsApp Business",
       icon: "💬",
       connected: false,
     },
@@ -278,6 +301,42 @@ export async function fetchIntegrations(
     console.error("[integrations] Failed to fetch Slack status:", err);
   }
 
+  // Fetch Twilio SMS
+  try {
+    const twilioData = await callEdgeFunction(
+      "send-sms",
+      { action: "get-config" },
+      accessToken
+    );
+    if (twilioData.configured) {
+      const idx = integrations.findIndex((i) => i.provider === "twilio");
+      if (idx !== -1) {
+        integrations[idx].connected = true;
+        integrations[idx].detail = twilioData.phone_number as string;
+      }
+    }
+  } catch (err) {
+    console.error("[integrations] Failed to fetch Twilio status:", err);
+  }
+
+  // Fetch WhatsApp
+  try {
+    const waData = await callEdgeFunction(
+      "send-whatsapp",
+      { action: "get-config" },
+      accessToken
+    );
+    if (waData.configured) {
+      const idx = integrations.findIndex((i) => i.provider === "whatsapp");
+      if (idx !== -1) {
+        integrations[idx].connected = true;
+        integrations[idx].detail = waData.display_phone as string;
+      }
+    }
+  } catch (err) {
+    console.error("[integrations] Failed to fetch WhatsApp status:", err);
+  }
+
   return integrations;
 }
 
@@ -307,6 +366,20 @@ export async function disconnectIntegration(
       await callEdgeFunction(
         "slack-api",
         { action: "disconnect" },
+        accessToken
+      );
+      break;
+    case "twilio":
+      await callEdgeFunction(
+        "send-sms",
+        { action: "delete-config" },
+        accessToken
+      );
+      break;
+    case "whatsapp":
+      await callEdgeFunction(
+        "send-whatsapp",
+        { action: "delete-config" },
         accessToken
       );
       break;

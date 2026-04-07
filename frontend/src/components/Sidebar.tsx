@@ -2,18 +2,27 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { useAuthContext } from "@/context/AuthContext";
+import { useAuraSessionContext } from "@/context/AuraSessionContext";
+import { listConversations } from "@/lib/api";
 
-/* ── Hardcoded colors (matching design/chat-interface.html) ── */
+/* ── CSS variable aliases ── */
 const C = {
-  sidebarBg: "#ebe5dc",
-  border: "#ddd6cc",
-  surface: "#ffffff",
-  text: "#1a1a1a",
-  textSecondary: "#6b6560",
-  textMuted: "#a39e97",
-  orange: "#e36b2b",
+  sidebarBg: "var(--sidebar-bg)",
+  border: "var(--border)",
+  surface: "var(--surface)",
+  text: "var(--text)",
+  textSecondary: "var(--text-secondary)",
+  textMuted: "var(--text-muted)",
+  orange: "var(--orange)",
 };
+
+interface RecentConversation {
+  id: string;
+  title: string;
+  updated_at: string;
+}
 
 interface NavItem {
   label: string;
@@ -67,15 +76,33 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-const RECENT_SESSIONS = [
-  { id: "1", title: "Réunion équipe produit", time: "Il y a 2h" },
-  { id: "2", title: "Appel client Dupont", time: "Hier" },
-  { id: "3", title: "Brainstorm marketing", time: "Lun" },
-];
+function formatRelativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diff / 60000);
+  const hrs = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  if (min < 1) return "maintenant";
+  if (min < 60) return `${min}min`;
+  if (hrs < 24) return `${hrs}h`;
+  if (days < 7) return `${days}j`;
+  return new Date(iso).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+}
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { user } = useAuthContext();
+  const { user, session } = useAuthContext();
+  const auraSession = useAuraSessionContext();
+  const [recentConvos, setRecentConvos] = useState<RecentConversation[]>([]);
+
+  useEffect(() => {
+    if (!session?.access_token) return;
+    listConversations(session.access_token, 5)
+      .then((data) => {
+        const list = Array.isArray(data) ? data : data.conversations ?? [];
+        setRecentConvos(list);
+      })
+      .catch((e) => console.warn("[Sidebar] Failed to load conversations:", e));
+  }, [session?.access_token, auraSession.state]);
 
   const userName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Utilisateur";
   const userEmail = user?.email || "";
@@ -184,29 +211,87 @@ export function Sidebar() {
         Discussions
       </div>
 
+      {/* ── New discussion button ── */}
+      <div style={{ padding: "4px 10px" }}>
+        <button
+          onClick={() => {
+            sessionStorage.setItem("aura_new_conversation", "1");
+            auraSession.startNewConversation();
+            if (session?.access_token) {
+              listConversations(session.access_token, 5)
+                .then((data) => {
+                  const list = Array.isArray(data) ? data : data.conversations ?? [];
+                  setRecentConvos(list);
+                })
+                .catch(() => {});
+            }
+            if (pathname !== "/") {
+              window.location.href = "/";
+            }
+          }}
+          style={{
+            width: "100%",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: `1px dashed ${C.border}`,
+            background: "transparent",
+            color: C.textSecondary,
+            fontSize: 12,
+            cursor: "pointer",
+            transition: "all 0.15s",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.borderColor = C.orange;
+            e.currentTarget.style.color = C.orange;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = C.border;
+            e.currentTarget.style.color = C.textSecondary;
+          }}
+        >
+          <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
+          Nouvelle discussion
+        </button>
+      </div>
+
       {/* ── Sessions list ── */}
       <div style={{ flex: 1, overflowY: "auto", padding: "0 10px" }}>
-        {RECENT_SESSIONS.map((s) => (
-          <Link
+        {recentConvos.length === 0 && (
+          <p style={{ fontSize: 11, color: C.textMuted, padding: "8px 12px" }}>
+            Aucune discussion recente
+          </p>
+        )}
+        {recentConvos.map((s) => (
+          <button
             key={s.id}
-            href="/"
+            onClick={() => {
+              auraSession.loadConversation(s.id);
+              if (pathname !== "/") {
+                window.location.href = "/";
+              }
+            }}
             style={{
+              width: "100%",
               display: "flex",
               alignItems: "center",
               gap: 8,
               padding: "8px 12px",
               borderRadius: 8,
-              textDecoration: "none",
+              border: "none",
+              textAlign: "left",
               marginBottom: 1,
               transition: "background 0.15s",
-              background: isHome && s.id === "1" ? C.surface : "transparent",
-              boxShadow: isHome && s.id === "1" ? "0 1px 3px rgba(0,0,0,0.05)" : "none",
+              background: "transparent",
+              cursor: "pointer",
             }}
             onMouseEnter={(e) => {
-              if (!(isHome && s.id === "1")) e.currentTarget.style.background = "rgba(0,0,0,0.04)";
+              e.currentTarget.style.background = "rgba(0,0,0,0.04)";
             }}
             onMouseLeave={(e) => {
-              if (!(isHome && s.id === "1")) e.currentTarget.style.background = "transparent";
+              e.currentTarget.style.background = "transparent";
             }}
           >
             <div
@@ -214,27 +299,27 @@ export function Sidebar() {
                 width: 6,
                 height: 6,
                 borderRadius: "50%",
-                background: isHome && s.id === "1" ? C.orange : C.textMuted,
+                background: C.textMuted,
                 flexShrink: 0,
               }}
             />
             <span
               style={{
                 fontSize: 12,
-                color: isHome && s.id === "1" ? C.text : C.textSecondary,
-                fontWeight: isHome && s.id === "1" ? 500 : 400,
+                color: C.textSecondary,
+                fontWeight: 400,
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 flex: 1,
               }}
             >
-              {s.title}
+              {s.title || "Conversation sans titre"}
             </span>
             <span style={{ fontSize: 10, color: C.textMuted, flexShrink: 0 }}>
-              {s.time}
+              {formatRelativeTime(s.updated_at)}
             </span>
-          </Link>
+          </button>
         ))}
       </div>
 

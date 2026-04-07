@@ -80,6 +80,19 @@ export default function ActivityPage() {
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<string>("all");
+
+  const loadActivity = () => {
+    if (!session) return;
+    setLoading(true);
+    setError(null);
+    fetchActivity(session.access_token)
+      .then((data) => {
+        setActivity(Array.isArray(data) ? data : data.activity ?? []);
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  };
 
   useEffect(() => {
     if (authLoading) return;
@@ -88,23 +101,21 @@ export default function ActivityPage() {
       return;
     }
 
-    fetchActivity(session.access_token)
-      .then((data) => {
-        setActivity(Array.isArray(data) ? data : data.activity ?? []);
-      })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+    loadActivity();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, session, authLoading, router]);
 
   if (authLoading || (!user && !error)) {
     return (
       <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh" }}>
-        <div style={{ color: "#a39e97", fontSize: 14 }}>Chargement...</div>
+        <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Chargement...</div>
       </div>
     );
   }
 
-  const grouped = groupByDate(activity);
+  const actionTypes = Array.from(new Set(activity.map((a) => a.type)));
+  const filtered = filter === "all" ? activity : activity.filter((a) => a.type === filter);
+  const grouped = groupByDate(filtered);
 
   return (
     <div style={{ maxWidth: 960, margin: "0 auto", padding: "48px 24px" }}>
@@ -114,20 +125,82 @@ export default function ActivityPage() {
           style={{
             fontSize: 28,
             fontWeight: 700,
-            color: "#1a1a1a",
+            color: "var(--text)",
             marginBottom: 6,
           }}
         >
           Activité
         </h1>
-        <p style={{ fontSize: 14, color: "#a39e97" }}>
+        <p style={{ fontSize: 14, color: "var(--text-muted)" }}>
           Historique des actions effectuées par Aura
         </p>
+
+        {/* Refresh button */}
+        <button
+          onClick={loadActivity}
+          disabled={loading}
+          style={{
+            marginTop: 12,
+            padding: "6px 16px",
+            fontSize: 13,
+            fontWeight: 600,
+            color: "var(--surface)",
+            background: "var(--orange)",
+            border: "none",
+            borderRadius: 8,
+            cursor: loading ? "not-allowed" : "pointer",
+            opacity: loading ? 0.6 : 1,
+            transition: "opacity 0.15s ease",
+          }}
+        >
+          {loading ? "Chargement..." : "Rafraîchir"}
+        </button>
       </div>
+
+      {/* Filter bar */}
+      {actionTypes.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 24 }}>
+          <button
+            onClick={() => setFilter("all")}
+            style={{
+              padding: "5px 14px",
+              fontSize: 12,
+              fontWeight: 600,
+              borderRadius: 8,
+              border: `1px solid ${filter === "all" ? "var(--orange)" : "var(--border-light)"}`,
+              background: filter === "all" ? "var(--orange)" : "var(--surface)",
+              color: filter === "all" ? "var(--surface)" : "var(--text-secondary)",
+              cursor: "pointer",
+              transition: "all 0.15s ease",
+            }}
+          >
+            Tous
+          </button>
+          {actionTypes.map((type) => (
+            <button
+              key={type}
+              onClick={() => setFilter(type)}
+              style={{
+                padding: "5px 14px",
+                fontSize: 12,
+                fontWeight: 600,
+                borderRadius: 8,
+                border: `1px solid ${filter === type ? "var(--orange)" : "var(--border-light)"}`,
+                background: filter === type ? "var(--orange)" : "var(--surface)",
+                color: filter === type ? "var(--surface)" : "var(--text-secondary)",
+                cursor: "pointer",
+                transition: "all 0.15s ease",
+              }}
+            >
+              {type}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Loading */}
       {loading && (
-        <div style={{ textAlign: "center", padding: 60, color: "#a39e97", fontSize: 14 }}>
+        <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)", fontSize: 14 }}>
           Chargement de l&apos;activité...
         </div>
       )}
@@ -150,19 +223,19 @@ export default function ActivityPage() {
       )}
 
       {/* Empty */}
-      {!loading && !error && activity.length === 0 && (
+      {!loading && !error && filtered.length === 0 && (
         <div
           style={{
             textAlign: "center",
             padding: 60,
-            background: "#ffffff",
-            border: "1px solid #e8e2d9",
+            background: "var(--surface)",
+            border: "1px solid var(--border-light)",
             borderRadius: 16,
           }}
         >
           <div style={{ fontSize: 40, marginBottom: 16, opacity: 0.3 }}>⏱</div>
-          <p style={{ color: "#6b6560", fontSize: 14 }}>Aucune activité enregistrée</p>
-          <p style={{ color: "#a39e97", fontSize: 12, marginTop: 4 }}>
+          <p style={{ color: "var(--text-secondary)", fontSize: 14 }}>Aucune activité enregistrée</p>
+          <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 4 }}>
             Les actions d&apos;Aura apparaitront ici
           </p>
         </div>
@@ -177,7 +250,7 @@ export default function ActivityPage() {
               fontWeight: 600,
               textTransform: "uppercase",
               letterSpacing: "0.08em",
-              color: "#a39e97",
+              color: "var(--text-muted)",
               marginBottom: 16,
             }}
           >
@@ -192,7 +265,7 @@ export default function ActivityPage() {
                 top: 6,
                 bottom: 6,
                 width: 2,
-                background: "#ddd6cc",
+                background: "var(--border)",
                 borderRadius: 1,
               }}
             />
@@ -221,7 +294,7 @@ function TimelineItem({ item }: { item: ActivityItem }) {
         transition: "background 0.15s ease",
       }}
       onMouseEnter={(e) => {
-        e.currentTarget.style.background = "#f0ebe4";
+        e.currentTarget.style.background = "var(--surface-hover)";
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.background = "transparent";
@@ -242,13 +315,13 @@ function TimelineItem({ item }: { item: ActivityItem }) {
       />
 
       {/* Time */}
-      <div style={{ fontSize: 11, color: "#a39e97", marginBottom: 3 }}>
+      <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 3 }}>
         {formatTime(item.created_at)}
       </div>
 
       {/* Title + type badge */}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: "#1a1a1a" }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
           {item.title}
         </span>
         <span
@@ -267,7 +340,7 @@ function TimelineItem({ item }: { item: ActivityItem }) {
 
       {/* Description */}
       {item.description && (
-        <p style={{ fontSize: 12, color: "#a39e97", marginTop: 3, lineHeight: 1.5 }}>
+        <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 3, lineHeight: 1.5 }}>
           {item.description}
         </p>
       )}

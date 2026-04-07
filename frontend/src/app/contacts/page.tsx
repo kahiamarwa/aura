@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthContext } from "@/context/AuthContext";
-import { fetchContacts, createContact, deleteContact } from "@/lib/api";
+import { fetchContacts, createContact, deleteContact, updateContact } from "@/lib/api";
 
 interface Contact {
   id: string;
@@ -49,6 +49,7 @@ export default function ContactsPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
+  const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [submitting, setSubmitting] = useState(false);
   const [hoveredRow, setHoveredRow] = useState<string | null>(null);
@@ -82,13 +83,18 @@ export default function ContactsPage() {
     return () => clearTimeout(t);
   }, [search, load]);
 
-  const handleCreate = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!session) return;
     setSubmitting(true);
     try {
-      await createContact(session.access_token, form);
+      if (editingContact) {
+        await updateContact(session.access_token, editingContact.id, form);
+      } else {
+        await createContact(session.access_token, form);
+      }
       setForm(emptyForm);
+      setEditingContact(null);
       setShowModal(false);
       load(search);
     } catch (err) {
@@ -96,6 +102,18 @@ export default function ContactsPage() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleEdit = (contact: Contact) => {
+    setEditingContact(contact);
+    setForm({
+      name: contact.name || "",
+      email: contact.email || "",
+      phone: contact.phone || "",
+      company: contact.company || "",
+      notes: contact.notes || "",
+    });
+    setShowModal(true);
   };
 
   const handleDelete = async (id: string) => {
@@ -111,7 +129,7 @@ export default function ContactsPage() {
   if (authLoading || (!user && !error)) {
     return (
       <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh" }}>
-        <div style={{ color: "#a39e97", fontSize: 14 }}>Chargement...</div>
+        <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Chargement...</div>
       </div>
     );
   }
@@ -121,9 +139,9 @@ export default function ContactsPage() {
     padding: "10px 14px",
     fontSize: 13,
     borderRadius: 10,
-    border: "1px solid #ddd6cc",
-    background: "#faf6f1",
-    color: "#1a1a1a",
+    border: "1px solid var(--border)",
+    background: "var(--bg-warm)",
+    color: "var(--text)",
     outline: "none",
     transition: "border-color 0.2s",
   };
@@ -142,10 +160,10 @@ export default function ContactsPage() {
         }}
       >
         <div>
-          <h1 style={{ fontSize: 28, fontWeight: 700, color: "#1a1a1a", marginBottom: 6 }}>
+          <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text)", marginBottom: 6 }}>
             Contacts
           </h1>
-          <p style={{ fontSize: 14, color: "#a39e97" }}>Gérez vos contacts</p>
+          <p style={{ fontSize: 14, color: "var(--text-muted)" }}>Gérez vos contacts</p>
         </div>
         <button
           onClick={() => setShowModal(true)}
@@ -199,9 +217,9 @@ export default function ContactsPage() {
             padding: "12px 14px 12px 40px",
             fontSize: 13,
             borderRadius: 12,
-            border: "1px solid #ddd6cc",
-            background: "#ffffff",
-            color: "#1a1a1a",
+            border: "1px solid var(--border)",
+            background: "var(--surface)",
+            color: "var(--text)",
             outline: "none",
           }}
         />
@@ -226,17 +244,17 @@ export default function ContactsPage() {
 
       {/* Loading */}
       {loading && (
-        <div style={{ textAlign: "center", padding: 60, color: "#a39e97", fontSize: 14 }}>
+        <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)", fontSize: 14 }}>
           Chargement des contacts...
         </div>
       )}
 
       {/* Empty */}
       {!loading && !error && contacts.length === 0 && (
-        <div style={{ textAlign: "center", padding: 60, background: "#ffffff", border: "1px solid #e8e2d9", borderRadius: 16 }}>
+        <div style={{ textAlign: "center", padding: 60, background: "var(--surface)", border: "1px solid var(--border-light)", borderRadius: 16 }}>
           <div style={{ fontSize: 40, marginBottom: 16, opacity: 0.3 }}>👤</div>
-          <p style={{ color: "#6b6560", fontSize: 14 }}>Aucun contact</p>
-          <p style={{ color: "#a39e97", fontSize: 12, marginTop: 4 }}>
+          <p style={{ color: "var(--text-secondary)", fontSize: 14 }}>Aucun contact</p>
+          <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 4 }}>
             Ajoutez votre premier contact
           </p>
         </div>
@@ -244,7 +262,7 @@ export default function ContactsPage() {
 
       {/* Table */}
       {!loading && contacts.length > 0 && (
-        <div style={{ overflow: "hidden", background: "#ffffff", border: "1px solid #e8e2d9", borderRadius: 16 }}>
+        <div style={{ overflow: "hidden", background: "var(--surface)", border: "1px solid var(--border-light)", borderRadius: 16 }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
@@ -258,8 +276,8 @@ export default function ContactsPage() {
                       fontWeight: 600,
                       textTransform: "uppercase",
                       letterSpacing: "0.06em",
-                      color: "#a39e97",
-                      borderBottom: "1px solid #ddd6cc",
+                      color: "var(--text-muted)",
+                      borderBottom: "1px solid var(--border)",
                     }}
                   >
                     {h}
@@ -277,7 +295,7 @@ export default function ContactsPage() {
                     onMouseEnter={() => setHoveredRow(c.id)}
                     onMouseLeave={() => setHoveredRow(null)}
                     style={{
-                      background: isHovered ? "#f0ebe4" : "transparent",
+                      background: isHovered ? "var(--surface-hover)" : "transparent",
                       transition: "background 0.15s",
                     }}
                   >
@@ -300,18 +318,18 @@ export default function ContactsPage() {
                         >
                           {getInitials(c.name)}
                         </div>
-                        <span style={{ fontSize: 13, fontWeight: 500, color: "#1a1a1a" }}>
+                        <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text)" }}>
                           {c.name}
                         </span>
                       </div>
                     </td>
-                    <td style={{ padding: "12px 16px", fontSize: 13, color: "#6b6560" }}>
+                    <td style={{ padding: "12px 16px", fontSize: 13, color: "var(--text-secondary)" }}>
                       {c.email || "—"}
                     </td>
-                    <td style={{ padding: "12px 16px", fontSize: 13, color: "#6b6560" }}>
+                    <td style={{ padding: "12px 16px", fontSize: 13, color: "var(--text-secondary)" }}>
                       {c.phone || "—"}
                     </td>
-                    <td style={{ padding: "12px 16px", fontSize: 13, color: "#6b6560" }}>
+                    <td style={{ padding: "12px 16px", fontSize: 13, color: "var(--text-secondary)" }}>
                       {c.company || "—"}
                     </td>
                     <td style={{ padding: "12px 16px", textAlign: "right" }}>
@@ -324,6 +342,21 @@ export default function ContactsPage() {
                           transition: "opacity 0.15s",
                         }}
                       >
+                        <button
+                          onClick={() => handleEdit(c)}
+                          style={{
+                            padding: "4px 10px",
+                            fontSize: 11,
+                            fontWeight: 500,
+                            color: "var(--orange)",
+                            background: "rgba(227,107,43,0.1)",
+                            border: "1px solid rgba(227,107,43,0.2)",
+                            borderRadius: 6,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Modifier
+                        </button>
                         <button
                           onClick={() => handleDelete(c.id)}
                           style={{
@@ -352,7 +385,7 @@ export default function ContactsPage() {
       {/* Add contact modal */}
       {showModal && (
         <div
-          onClick={() => setShowModal(false)}
+          onClick={() => { setShowModal(false); setEditingContact(null); setForm(emptyForm); }}
           style={{
             position: "fixed",
             inset: 0,
@@ -369,8 +402,8 @@ export default function ContactsPage() {
             style={{
               width: 480,
               maxWidth: "90vw",
-              background: "#ffffff",
-              border: "1px solid #ddd6cc",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
               borderRadius: 16,
               padding: 28,
               boxShadow: "0 16px 48px rgba(0,0,0,0.4)",
@@ -380,15 +413,15 @@ export default function ContactsPage() {
               style={{
                 fontSize: 18,
                 fontWeight: 700,
-                color: "#1a1a1a",
+                color: "var(--text)",
                 marginBottom: 24,
               }}
             >
-              Ajouter un contact
+              {editingContact ? "Modifier le contact" : "Ajouter un contact"}
             </h2>
-            <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div>
-                <label style={{ fontSize: 11, fontWeight: 500, color: "#a39e97", marginBottom: 4, display: "block" }}>
+                <label style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>
                   Nom complet
                 </label>
                 <input
@@ -397,11 +430,11 @@ export default function ContactsPage() {
                   required
                   style={inputStyle}
                   onFocus={(e) => (e.target.style.borderColor = "#ff8c42")}
-                  onBlur={(e) => (e.target.style.borderColor = "#ddd6cc")}
+                  onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
                 />
               </div>
               <div>
-                <label style={{ fontSize: 11, fontWeight: 500, color: "#a39e97", marginBottom: 4, display: "block" }}>
+                <label style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>
                   Email
                 </label>
                 <input
@@ -410,12 +443,12 @@ export default function ContactsPage() {
                   onChange={(e) => setForm({ ...form, email: e.target.value })}
                   style={inputStyle}
                   onFocus={(e) => (e.target.style.borderColor = "#ff8c42")}
-                  onBlur={(e) => (e.target.style.borderColor = "#ddd6cc")}
+                  onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
                 />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                 <div>
-                  <label style={{ fontSize: 11, fontWeight: 500, color: "#a39e97", marginBottom: 4, display: "block" }}>
+                  <label style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>
                     Téléphone
                   </label>
                   <input
@@ -423,11 +456,11 @@ export default function ContactsPage() {
                     onChange={(e) => setForm({ ...form, phone: e.target.value })}
                     style={inputStyle}
                     onFocus={(e) => (e.target.style.borderColor = "#ff8c42")}
-                    onBlur={(e) => (e.target.style.borderColor = "#ddd6cc")}
+                    onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
                   />
                 </div>
                 <div>
-                  <label style={{ fontSize: 11, fontWeight: 500, color: "#a39e97", marginBottom: 4, display: "block" }}>
+                  <label style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>
                     Entreprise
                   </label>
                   <input
@@ -435,12 +468,12 @@ export default function ContactsPage() {
                     onChange={(e) => setForm({ ...form, company: e.target.value })}
                     style={inputStyle}
                     onFocus={(e) => (e.target.style.borderColor = "#ff8c42")}
-                    onBlur={(e) => (e.target.style.borderColor = "#ddd6cc")}
+                    onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
                   />
                 </div>
               </div>
               <div>
-                <label style={{ fontSize: 11, fontWeight: 500, color: "#a39e97", marginBottom: 4, display: "block" }}>
+                <label style={{ fontSize: 11, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>
                   Notes
                 </label>
                 <textarea
@@ -452,7 +485,7 @@ export default function ContactsPage() {
                     resize: "vertical",
                   }}
                   onFocus={(e) => (e.target.style.borderColor = "#ff8c42")}
-                  onBlur={(e) => (e.target.style.borderColor = "#ddd6cc")}
+                  onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
                 />
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 }}>
@@ -460,15 +493,16 @@ export default function ContactsPage() {
                   type="button"
                   onClick={() => {
                     setShowModal(false);
+                    setEditingContact(null);
                     setForm(emptyForm);
                   }}
                   style={{
                     padding: "10px 20px",
                     fontSize: 13,
                     fontWeight: 500,
-                    color: "#6b6560",
+                    color: "var(--text-secondary)",
                     background: "transparent",
-                    border: "1px solid #ddd6cc",
+                    border: "1px solid var(--border)",
                     borderRadius: 10,
                     cursor: "pointer",
                   }}
@@ -490,7 +524,7 @@ export default function ContactsPage() {
                     opacity: submitting ? 0.6 : 1,
                   }}
                 >
-                  {submitting ? "Enregistrement..." : "Enregistrer"}
+                  {submitting ? "Enregistrement..." : editingContact ? "Mettre a jour" : "Enregistrer"}
                 </button>
               </div>
             </form>

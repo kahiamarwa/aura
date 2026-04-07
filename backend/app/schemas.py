@@ -12,6 +12,7 @@ class ChatRequest(BaseModel):
     command: str
     context: list[TranscriptionSegment] = []
     user_timezone: str = "UTC"  # e.g. "Europe/Paris"
+    conversation_id: str | None = None
 
 
 class ChatResponse(BaseModel):

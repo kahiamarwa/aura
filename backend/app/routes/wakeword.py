@@ -31,10 +31,11 @@ async def wakeword_ws(websocket: WebSocket):
 
             result = service.process_audio(audio_array)
 
-            # Afficher tous les scores pour debug
+            # Afficher tous les scores pour debug (sans re-predict)
             if frame_count % 10 == 1:
-                predictions = service.model.predict(audio_array)
-                print(f"[WakeWord] scores={predictions}")
+                # Lire les scores du dernier predict déjà fait dans process_audio
+                scores = {name: service.model.prediction_buffer[name][-1] for name in service.model_names}
+                print(f"[WakeWord] scores={scores}")
 
             if result is not None:
                 print(f"[WakeWord] >>> DETECTED! model={result['model']} score={result['score']:.4f}")

@@ -24,6 +24,30 @@
   --sidebar-width: 260px;
 }
 
+/* ─── Dark Mode ───────────────────────────────────────────────────── */
+
+html.dark {
+  --bg: #1a1a1e;
+  --bg-warm: #222226;
+  --sidebar-bg: #1e1e22;
+  --surface: #2a2a2e;
+  --surface-hover: #333338;
+  --border: #3a3a40;
+  --border-light: #333338;
+  --text: #e8e2d9;
+  --text-secondary: #a39e97;
+  --text-muted: #6b6560;
+  --orange: #f08c42;
+  --orange-light: #f5a623;
+  --orange-warm: #e36b2b;
+  --user-bubble: #e36b2b;
+  --green: #3dbe80;
+  --cyan: #2aacbe;
+  --purple: #9b7ed8;
+  --amber: #daa020;
+  --red: #e85050;
+}
+
 @theme inline {
   --color-background: var(--bg);
   --color-foreground: var(--text);
@@ -89,6 +113,10 @@ body {
   -webkit-backdrop-filter: blur(20px);
 }
 
+html.dark .glass-card {
+  background: rgba(42, 42, 46, 0.7);
+}
+
 .glass-card-hover {
   background: rgba(255, 255, 255, 0.7);
   border: 1px solid var(--border-light);
@@ -101,6 +129,14 @@ body {
 .glass-card-hover:hover {
   background: rgba(255, 255, 255, 0.85);
   border-color: var(--border);
+}
+
+html.dark .glass-card-hover {
+  background: rgba(42, 42, 46, 0.7);
+}
+
+html.dark .glass-card-hover:hover {
+  background: rgba(51, 51, 56, 0.85);
 }
 
 /* ─── Text Gradient ────────────────────────────────────────────────── */
@@ -219,4 +255,12 @@ body {
 
 .msg-in {
   animation: msgIn 0.3s ease-out forwards;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }

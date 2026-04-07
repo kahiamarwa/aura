@@ -15,7 +15,7 @@ interface StatusBarProps {
 }
 
 function getIdleMessage(fallbackMode?: string) {
-  if (fallbackMode === "custom") return 'Dites "Aura" pour commencer';
+  if (fallbackMode === "custom") return 'Dites "Dis Aura" pour commencer';
   if (fallbackMode === "builtin") return 'Dites "Computer" pour commencer';
   return "Cliquez le bouton pour parler";
 }
