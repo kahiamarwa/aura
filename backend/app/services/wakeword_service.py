@@ -5,8 +5,8 @@ import os
 import numpy as np
 from openwakeword.model import Model
 
-_CUSTOM_DOCKER = "/openwake/dis_aura.onnx"
-_CUSTOM_LOCAL = str(Path(__file__).resolve().parents[3] / "openwake" / "dis_aura.onnx")
+_CUSTOM_DOCKER = "/openwake/Aura_test.onnx"
+_CUSTOM_LOCAL = str(Path(__file__).resolve().parents[3] / "openwake" / "Aura_test.onnx")
 _MODEL_PATH = os.getenv("WAKEWORD_MODEL_PATH", _CUSTOM_DOCKER if os.path.exists(_CUSTOM_DOCKER) else _CUSTOM_LOCAL)
 
 

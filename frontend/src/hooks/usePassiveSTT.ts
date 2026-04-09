@@ -1,11 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchSttToken } from "@/lib/api";
 import { int16ToBase64 } from "@/lib/audioUtils";
 import { contextBuffer } from "@/lib/contextBuffer";
 import { contextPersistence } from "@/lib/contextPersistence";
-import { TOKEN_REFRESH_MS } from "@/lib/constants";
+import { BACKEND_URL } from "@/lib/constants";
+
+const RECONNECT_DELAY_MS = 3000;
+const MAX_RETRIES = 5;
 
 interface UsePassiveSTTReturn {
   isConnected: boolean;
@@ -28,10 +30,8 @@ export function usePassiveSTT(): UsePassiveSTTReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const isPausedRef = useRef(false);
   const sampleRateRef = useRef(48000);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isStoppedRef = useRef(false);
   const retryCountRef = useRef(0);
-  const MAX_RETRIES = 5;
 
   const closeWebSocket = useCallback(() => {
     if (wsRef.current) {
@@ -55,41 +55,28 @@ export function usePassiveSTT(): UsePassiveSTTReturn {
 
       try {
         setError(null);
-        const token = await fetchSttToken();
 
-        const audioFormat =
-          sr === 44100 ? "pcm_44100" : sr === 48000 ? "pcm_48000" : "pcm_16000";
-
-        const params = new URLSearchParams({
-          model_id: "scribe_v2_realtime",
-          token,
-          audio_format: audioFormat,
-          language_code: "fr",
-          commit_strategy: "vad",
-          vad_silence_threshold_secs: "1.5",
-          vad_threshold: "0.4",
-          min_speech_duration_ms: "100",
-          include_timestamps: "true",
-        });
-
-        const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?${params.toString()}`;
+        // Connect to our backend Gemini STT proxy
+        const wsUrl = BACKEND_URL.replace(/^http/, "ws") + "/api/gemini-stt";
         const ws = new WebSocket(wsUrl);
 
         ws.onmessage = (event) => {
           const data = JSON.parse(event.data);
 
-          switch (data.message_type) {
+          switch (data.type) {
             case "session_started":
               retryCountRef.current = 0;
               setIsConnected(true);
+              console.log("[STT-Passive] Gemini session started");
               break;
+
             case "partial_transcript":
-              if (data.text) setCurrentPartial(data.text);
+              if (data.text) {
+                setCurrentPartial(data.text);
+              }
               break;
+
             case "committed_transcript":
-              // Ignore — we use committed_transcript_with_timestamps instead
-              break;
-            case "committed_transcript_with_timestamps":
               if (data.text) {
                 contextBuffer.add(data.text);
                 contextPersistence.persistSegment(data.text, new Date());
@@ -97,39 +84,19 @@ export function usePassiveSTT(): UsePassiveSTTReturn {
                 setCurrentPartial("");
               }
               break;
-            // --- Error handling from docs ---
-            case "auth_error":
-              console.error("[STT-Passive] Auth error:", data.error);
-              setError("Erreur authentification STT");
-              break;
-            case "quota_exceeded":
-              console.error("[STT-Passive] Quota exceeded:", data.error);
-              setError("Quota STT dépassé");
-              isStoppedRef.current = true; // Don't retry
-              break;
-            case "rate_limited":
-              console.warn("[STT-Passive] Rate limited:", data.error);
-              break;
-            case "session_time_limit_exceeded":
-              console.warn("[STT-Passive] Session time limit, reconnecting...");
-              closeWebSocket();
-              connectWebSocket(sr);
-              break;
-            case "chunk_size_exceeded":
-              console.warn("[STT-Passive] Chunk too large:", data.error);
-              break;
+
             case "error":
-            case "input_error":
-            case "transcriber_error":
-              console.error("[STT-Passive]", data.message_type, ":", data.error);
+              console.error("[STT-Passive] Gemini error:", data.message);
+              setError(data.message || "Erreur Gemini STT");
               break;
+
             default:
               break;
           }
         };
 
         ws.onerror = () => {
-          setError("Connexion STT passive perdue");
+          setError("Connexion STT passive (Gemini) perdue");
           setIsConnected(false);
         };
 
@@ -137,30 +104,32 @@ export function usePassiveSTT(): UsePassiveSTTReturn {
           setIsConnected(false);
           if (!isStoppedRef.current && retryCountRef.current < MAX_RETRIES) {
             retryCountRef.current++;
-            const delay = Math.min(2000 * Math.pow(2, retryCountRef.current - 1), 30000);
-            console.warn(`[STT-Passive] Reconnecting ${retryCountRef.current}/${MAX_RETRIES} in ${delay / 1000}s`);
+            const delay = Math.min(
+              RECONNECT_DELAY_MS * Math.pow(2, retryCountRef.current - 1),
+              30000
+            );
+            console.warn(
+              `[STT-Passive] Reconnecting ${retryCountRef.current}/${MAX_RETRIES} in ${delay / 1000}s`
+            );
             setTimeout(() => connectWebSocket(sr), delay);
           } else if (retryCountRef.current >= MAX_RETRIES) {
-            setError("STT passif : trop de tentatives, arrêt");
+            setError("STT passif Gemini : trop de tentatives, arrêt");
           }
         };
 
         wsRef.current = ws;
-
-        // Schedule token refresh before expiry
-        if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-        refreshTimerRef.current = setTimeout(() => {
-          closeWebSocket();
-          connectWebSocket(sr);
-        }, TOKEN_REFRESH_MS);
       } catch (err) {
         setError(
-          err instanceof Error ? err.message : "Erreur connexion STT passive"
+          err instanceof Error
+            ? err.message
+            : "Erreur connexion STT passive Gemini"
         );
         if (!isStoppedRef.current && retryCountRef.current < MAX_RETRIES) {
           retryCountRef.current++;
-          const delay = Math.min(5000 * Math.pow(2, retryCountRef.current - 1), 60000);
-          console.warn(`[STT-Passive] Retry ${retryCountRef.current}/${MAX_RETRIES} in ${delay / 1000}s`);
+          const delay = Math.min(
+            5000 * Math.pow(2, retryCountRef.current - 1),
+            60000
+          );
           setTimeout(() => connectWebSocket(sr), delay);
         }
       }
@@ -180,10 +149,6 @@ export function usePassiveSTT(): UsePassiveSTTReturn {
 
   const stop = useCallback(() => {
     isStoppedRef.current = true;
-    if (refreshTimerRef.current) {
-      clearTimeout(refreshTimerRef.current);
-      refreshTimerRef.current = null;
-    }
     closeWebSocket();
     setCurrentPartial("");
   }, [closeWebSocket]);
@@ -209,9 +174,8 @@ export function usePassiveSTT(): UsePassiveSTTReturn {
       const base64 = int16ToBase64(samples);
       wsRef.current.send(
         JSON.stringify({
-          message_type: "input_audio_chunk",
+          type: "audio",
           audio_base_64: base64,
-          commit: false,
           sample_rate: sampleRateRef.current,
         })
       );
@@ -223,7 +187,6 @@ export function usePassiveSTT(): UsePassiveSTTReturn {
   useEffect(() => {
     return () => {
       isStoppedRef.current = true;
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
       closeWebSocket();
     };
   }, [closeWebSocket]);

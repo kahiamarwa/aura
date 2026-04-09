@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes import activity, chat, contacts, conversations, discussions, health, settings, stt_token, summaries, wakeword
+from app.routes import activity, chat, contacts, conversations, discussions, gemini_stt, health, settings, speakers, stt_token, summaries, wakeword
 
 app = FastAPI(title="AURA POC Backend")
 
@@ -29,3 +29,5 @@ app.include_router(activity.router)
 app.include_router(discussions.router)
 app.include_router(settings.router)
 app.include_router(conversations.router)
+app.include_router(gemini_stt.router)
+app.include_router(speakers.router)

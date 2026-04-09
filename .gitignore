@@ -45,3 +45,6 @@ PLAN_OPENWAKEWORD_INTEGRATION.md
 elevenlabs-doc*.md
 integrations-marwa/
 test_ppt.py
+
+# Speaker model cache (SpeechBrain)
+backend/app/services/.speaker_model_cache/

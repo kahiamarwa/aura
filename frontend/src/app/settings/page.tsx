@@ -15,7 +15,7 @@ import {
   type Integration,
   type Provider,
 } from "@/lib/integrations";
-import { fetchSettings, updateSettings } from "@/lib/api";
+import { fetchSettings, updateSettings, listSpeakers, enrollSpeaker, deleteSpeaker, type SpeakerEnrollment } from "@/lib/api";
 import { useTheme } from "@/context/ThemeContext";
 import { supabase } from "@/lib/supabase";
 
@@ -26,13 +26,14 @@ const OAUTH_URLS: Partial<Record<Provider, () => string>> = {
   slack: getSlackOAuthUrl,
 };
 
-type Section = "general" | "account" | "voice" | "passive" | "connectors" | "danger";
+type Section = "general" | "account" | "voice" | "passive" | "speakers" | "connectors" | "danger";
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "general", label: "General" },
   { id: "account", label: "Compte" },
   { id: "voice", label: "Assistant vocal" },
   { id: "passive", label: "Ecoute passive" },
+  { id: "speakers", label: "Voix autorisees" },
   { id: "connectors", label: "Connecteurs" },
   { id: "danger", label: "Zone danger" },
 ];
@@ -88,6 +89,114 @@ export default function SettingsPage() {
   const [waSaving, setWaSaving] = useState(false);
   const [waMethod, setWaMethod] = useState<"embedded" | "manual">("embedded");
   const [fbReady, setFbReady] = useState(false);
+
+  // Speaker enrollment state
+  const [speakers, setSpeakers] = useState<SpeakerEnrollment[]>([]);
+  const [speakersLoading, setSpeakersLoading] = useState(false);
+  const [enrollName, setEnrollName] = useState("");
+  const [enrollStep, setEnrollStep] = useState<"idle" | "recording" | "uploading" | "done" | "error">("idle");
+  const [enrollProgress, setEnrollProgress] = useState(0); // 0-5 for recording samples
+  const [enrollError, setEnrollError] = useState<string | null>(null);
+  const [enrollSuccess, setEnrollSuccess] = useState<string | null>(null);
+  const [deletingSpeaker, setDeletingSpeaker] = useState<string | null>(null);
+
+  // Load speakers when section changes to "speakers"
+  useEffect(() => {
+    if (activeSection !== "speakers" || !session?.access_token) return;
+    setSpeakersLoading(true);
+    listSpeakers(session.access_token)
+      .then(setSpeakers)
+      .catch(() => {})
+      .finally(() => setSpeakersLoading(false));
+  }, [activeSection, session?.access_token]);
+
+  // Speaker enrollment — record audio
+  const startEnrollmentRecording = useCallback(async () => {
+    if (!enrollName.trim()) {
+      setEnrollError("Veuillez entrer un nom pour cette voix.");
+      return;
+    }
+    setEnrollError(null);
+    setEnrollSuccess(null);
+    setEnrollStep("recording");
+    setEnrollProgress(0);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true },
+      });
+
+      const allChunks: Blob[] = [];
+      const totalSamples = 5;
+      const sampleDurationMs = 5000; // 5 seconds each
+
+      const recordSample = (sampleIndex: number): Promise<void> => {
+        return new Promise((resolve) => {
+          setEnrollProgress(sampleIndex);
+          const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+          const chunks: Blob[] = [];
+
+          recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) chunks.push(e.data);
+          };
+
+          recorder.onstop = () => {
+            allChunks.push(new Blob(chunks, { type: "audio/webm" }));
+            resolve();
+          };
+
+          recorder.start();
+          setTimeout(() => {
+            if (recorder.state === "recording") recorder.stop();
+          }, sampleDurationMs);
+        });
+      };
+
+      for (let i = 0; i < totalSamples; i++) {
+        await recordSample(i + 1);
+      }
+
+      stream.getTracks().forEach((t) => t.stop());
+      setEnrollStep("uploading");
+      setEnrollProgress(totalSamples);
+
+      // Combine all samples into one blob and upload
+      const combined = new Blob(allChunks, { type: "audio/webm" });
+      const result = await enrollSpeaker(
+        session!.access_token,
+        enrollName.trim(),
+        combined,
+      );
+
+      setEnrollStep("done");
+      setEnrollSuccess(
+        `Voix "${enrollName}" enregistree (${result.reference_duration_s}s de reference).`
+      );
+      setEnrollName("");
+      // Refresh list
+      const updated = await listSpeakers(session!.access_token);
+      setSpeakers(updated);
+    } catch (err) {
+      setEnrollStep("error");
+      setEnrollError(
+        err instanceof Error ? err.message : "Erreur lors de l'enregistrement"
+      );
+    }
+  }, [enrollName, session]);
+
+  const handleDeleteSpeaker = useCallback(async (id: string) => {
+    if (!session?.access_token) return;
+    if (!confirm("Supprimer cette voix enregistree ?")) return;
+    setDeletingSpeaker(id);
+    try {
+      await deleteSpeaker(session.access_token, id);
+      setSpeakers((prev) => prev.filter((s) => s.id !== id));
+    } catch {
+      setEnrollError("Erreur lors de la suppression");
+    } finally {
+      setDeletingSpeaker(null);
+    }
+  }, [session?.access_token]);
 
   // Theme change handler — applies immediately + updates local state
   const handleThemeChange = useCallback((value: string) => {
@@ -1288,6 +1397,251 @@ export default function SettingsPage() {
           </div>
         )}
 
+        {/* ─── Speaker Enrollment Section ─── */}
+        {activeSection === "speakers" && (
+          <div>
+            <SectionTitle>Voix autorisees</SectionTitle>
+            <p style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 24 }}>
+              Enregistrez les voix autorisees a utiliser Aura. Seules les personnes enregistrees pourront donner des commandes vocales.
+            </p>
+
+            {/* Enrolled speakers list */}
+            {speakersLoading ? (
+              <p style={{ fontSize: 13, color: "var(--text-muted)" }}>Chargement...</p>
+            ) : speakers.length > 0 ? (
+              <div style={{ marginBottom: 32 }}>
+                <h3 style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", marginBottom: 12 }}>
+                  Voix enregistrees ({speakers.length})
+                </h3>
+                {speakers.map((spk) => (
+                  <div
+                    key={spk.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "12px 16px",
+                      marginBottom: 8,
+                      borderRadius: 10,
+                      border: "1px solid var(--border-light)",
+                      background: "var(--bg-card)",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <div
+                        style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: "50%",
+                          background: "linear-gradient(135deg, #22c55e, #16a34a)",
+                          color: "white",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 14,
+                          fontWeight: 700,
+                        }}
+                      >
+                        {spk.speaker_name.charAt(0).toUpperCase()}
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>
+                          {spk.speaker_name}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                          Enregistre le {new Date(spk.created_at).toLocaleDateString("fr-FR")}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleDeleteSpeaker(spk.id)}
+                      disabled={deletingSpeaker === spk.id}
+                      style={{
+                        padding: "6px 14px",
+                        borderRadius: 8,
+                        border: "1px solid rgba(220, 50, 50, 0.3)",
+                        background: "transparent",
+                        color: "#dc3232",
+                        fontSize: 12,
+                        cursor: deletingSpeaker === spk.id ? "not-allowed" : "pointer",
+                        opacity: deletingSpeaker === spk.id ? 0.5 : 1,
+                      }}
+                    >
+                      {deletingSpeaker === spk.id ? "..." : "Supprimer"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                style={{
+                  padding: 20,
+                  borderRadius: 10,
+                  border: "1px dashed var(--border-light)",
+                  textAlign: "center",
+                  marginBottom: 32,
+                }}
+              >
+                <p style={{ fontSize: 13, color: "var(--text-muted)", margin: 0 }}>
+                  Aucune voix enregistree. La verification vocale est desactivee.
+                </p>
+              </div>
+            )}
+
+            {/* Enrollment form */}
+            <div
+              style={{
+                padding: 24,
+                borderRadius: 12,
+                border: "1px solid var(--border-light)",
+                background: "var(--bg-card)",
+              }}
+            >
+              <h3 style={{ fontSize: 15, fontWeight: 600, color: "var(--text)", marginTop: 0, marginBottom: 16 }}>
+                Enregistrer une nouvelle voix
+              </h3>
+
+              {enrollError && (
+                <div style={{
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  background: "rgba(220, 50, 50, 0.08)",
+                  border: "1px solid rgba(220, 50, 50, 0.2)",
+                  color: "#dc3232",
+                  fontSize: 13,
+                  marginBottom: 16,
+                }}>
+                  {enrollError}
+                </div>
+              )}
+
+              {enrollSuccess && (
+                <div style={{
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  background: "rgba(34, 197, 94, 0.08)",
+                  border: "1px solid rgba(34, 197, 94, 0.2)",
+                  color: "#16a34a",
+                  fontSize: 13,
+                  marginBottom: 16,
+                }}>
+                  {enrollSuccess}
+                </div>
+              )}
+
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ fontSize: 13, fontWeight: 500, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>
+                  Nom de la personne
+                </label>
+                <input
+                  type="text"
+                  value={enrollName}
+                  onChange={(e) => setEnrollName(e.target.value)}
+                  placeholder="Ex: Badreddine"
+                  disabled={enrollStep === "recording" || enrollStep === "uploading"}
+                  style={{
+                    width: "100%",
+                    padding: "10px 14px",
+                    borderRadius: 8,
+                    border: "1px solid var(--border-light)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    fontSize: 14,
+                    outline: "none",
+                    boxSizing: "border-box",
+                  }}
+                />
+              </div>
+
+              {enrollStep === "recording" && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                    <div
+                      style={{
+                        width: 12,
+                        height: 12,
+                        borderRadius: "50%",
+                        background: "#ef4444",
+                        animation: "blink 1s ease-in-out infinite",
+                      }}
+                    />
+                    <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>
+                      Enregistrement en cours... Sample {enrollProgress}/5
+                    </span>
+                  </div>
+                  <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0 }}>
+                    Parlez normalement pendant 5 secondes a chaque sample. Repetez des phrases variees.
+                  </p>
+                  {/* Progress bar */}
+                  <div style={{
+                    marginTop: 12,
+                    height: 6,
+                    borderRadius: 3,
+                    background: "var(--border-light)",
+                    overflow: "hidden",
+                  }}>
+                    <div style={{
+                      height: "100%",
+                      width: `${(enrollProgress / 5) * 100}%`,
+                      background: "linear-gradient(90deg, #22c55e, #16a34a)",
+                      borderRadius: 3,
+                      transition: "width 0.5s ease",
+                    }} />
+                  </div>
+                </div>
+              )}
+
+              {enrollStep === "uploading" && (
+                <div style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{
+                    width: 18,
+                    height: 18,
+                    border: "2px solid var(--orange)",
+                    borderTopColor: "transparent",
+                    borderRadius: "50%",
+                    animation: "spin 0.8s linear infinite",
+                  }} />
+                  <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>
+                    Traitement et creation de l&apos;empreinte vocale...
+                  </span>
+                </div>
+              )}
+
+              <button
+                onClick={startEnrollmentRecording}
+                disabled={enrollStep === "recording" || enrollStep === "uploading" || !enrollName.trim()}
+                style={{
+                  padding: "10px 24px",
+                  borderRadius: 10,
+                  border: "none",
+                  background: (enrollStep === "recording" || enrollStep === "uploading" || !enrollName.trim())
+                    ? "var(--border-light)"
+                    : "linear-gradient(135deg, #22c55e, #16a34a)",
+                  color: (enrollStep === "recording" || enrollStep === "uploading" || !enrollName.trim())
+                    ? "var(--text-muted)"
+                    : "white",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: (enrollStep === "recording" || enrollStep === "uploading" || !enrollName.trim())
+                    ? "not-allowed"
+                    : "pointer",
+                  transition: "all 0.15s ease",
+                }}
+              >
+                {enrollStep === "recording"
+                  ? "Enregistrement..."
+                  : enrollStep === "uploading"
+                    ? "Traitement..."
+                    : "Commencer l'enregistrement"}
+              </button>
+
+              <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 12, marginBottom: 0 }}>
+                5 echantillons de 5 secondes seront enregistres. Parlez clairement en variant les phrases.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* ─── Danger Zone Section ─── */}
         {activeSection === "danger" && (
           <div>
@@ -1332,7 +1686,7 @@ export default function SettingsPage() {
         )}
 
         {/* Save button — visible on all sections except connectors/danger */}
-        {activeSection !== "connectors" && activeSection !== "danger" && activeSection !== "account" && (
+        {activeSection !== "connectors" && activeSection !== "danger" && activeSection !== "account" && activeSection !== "speakers" && (
           <div style={{ marginTop: 32, display: "flex", justifyContent: "flex-end" }}>
             <button
               onClick={handleSaveSettings}

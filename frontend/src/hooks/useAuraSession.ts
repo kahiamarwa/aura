@@ -9,15 +9,23 @@ import { useCommandSTT } from "./useCommandSTT";
 import { useOpenWakeWord } from "./useOpenWakeWord";
 import { useAudioPlayer } from "./useAudioPlayer";
 import { useAuthContext } from "@/context/AuthContext";
-import { sendChat, sendChatStream, createConversation, addConversationMessage, listConversations, fetchConversationDetail } from "@/lib/api";
+import { sendChat, sendChatStream, createConversation, addConversationMessage, listConversations, fetchConversationDetail, verifySpeaker } from "@/lib/api";
+import { int16ToBase64 } from "@/lib/audioUtils";
 import { contextBuffer } from "@/lib/contextBuffer";
 import { contextPersistence } from "@/lib/contextPersistence";
 import {
+  BACKEND_URL,
   CONVERSATION_WINDOW_MS,
   BARGEIN_VOLUME_THRESHOLD,
   BARGEIN_VOLUME_THRESHOLD_SPEAKING,
   BARGEIN_CONSECUTIVE_FRAMES,
 } from "@/lib/constants";
+
+export interface VerificationResult {
+  status: "none" | "verified" | "rejected";
+  speakerName: string | null;
+  score: number;
+}
 
 interface UseAuraSessionReturn {
   state: AppState;
@@ -32,6 +40,7 @@ interface UseAuraSessionReturn {
   fallbackMode: string;
   errors: string[];
   muted: boolean;
+  verificationResult: VerificationResult;
   initialize: () => Promise<void>;
   cleanup: () => void;
   triggerWakeWord: () => void;
@@ -66,6 +75,9 @@ export function useAuraSession(): UseAuraSessionReturn {
   >([]);
 
   const [muted, setMuted] = useState(false);
+  const [verificationResult, setVerificationResult] = useState<VerificationResult>({
+    status: "none", speakerName: null, score: 0,
+  });
   const mutedRef = useRef(false);
 
   const stateRef = useRef<AppState>("initializing");
@@ -75,6 +87,7 @@ export function useAuraSession(): UseAuraSessionReturn {
   );
   const bargeInFrameCountRef = useRef(0);
   const conversationIdRef = useRef<string | null>(null);
+  const commandAudioBufferRef = useRef<Int16Array[]>([]);
 
   const { session: authSession } = useAuthContext();
   const audio = useAudioCapture();
@@ -126,11 +139,92 @@ export function useAuraSession(): UseAuraSessionReturn {
       setState("thinking");
       stateRef.current = "thinking";
 
+      const accessToken = authSession?.access_token;
+
+      // ── Speaker Verification ──────────────────────────────────────
+      // Combine buffered command audio and verify speaker identity
+      if (accessToken && commandAudioBufferRef.current.length > 0) {
+        try {
+          // Concatenate all buffered PCM chunks
+          const totalLen = commandAudioBufferRef.current.reduce((s, c) => s + c.length, 0);
+          const combined = new Int16Array(totalLen);
+          let offset = 0;
+          for (const chunk of commandAudioBufferRef.current) {
+            combined.set(chunk, offset);
+            offset += chunk.length;
+          }
+          commandAudioBufferRef.current = [];
+
+          const audioB64 = int16ToBase64(combined);
+          console.log("[AURA] Verifying speaker, audio samples:", combined.length);
+
+          const verifyResult = await verifySpeaker(accessToken, audioB64, audio.sampleRate);
+          console.log("[AURA] Speaker verification:", verifyResult);
+
+          if (verifyResult.verified) {
+            // Speaker recognized — show green flash
+            setVerificationResult({
+              status: "verified",
+              speakerName: verifyResult.speaker_name,
+              score: verifyResult.score,
+            });
+            // Auto-clear after 4s
+            setTimeout(() => setVerificationResult({ status: "none", speakerName: null, score: 0 }), 4000);
+          }
+
+          if (!verifyResult.verified && verifyResult.reason !== "no_enrollments") {
+            // Impostor detected — show red flash + reject command
+            setVerificationResult({
+              status: "rejected",
+              speakerName: verifyResult.speaker_name,
+              score: verifyResult.score,
+            });
+            // Auto-clear after 5s
+            setTimeout(() => setVerificationResult({ status: "none", speakerName: null, score: 0 }), 5000);
+
+            console.warn("[AURA] Speaker NOT verified, score:", verifyResult.score);
+
+            // Play rejection TTS
+            try {
+              const ttsRes = await fetch(`${BACKEND_URL}/api/tts`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text: "Personne non reconnue par notre systeme." }),
+              });
+              if (ttsRes.ok) {
+                const blob = await ttsRes.blob();
+                setState("speaking");
+                stateRef.current = "speaking";
+                await player.play(blob);
+              }
+            } catch {
+              // TTS failed, just skip audio
+            }
+
+            // Return to conversing/idle without processing the command
+            if (stateRef.current === "speaking") {
+              startConversationWindow();
+            } else {
+              setState("idle");
+              stateRef.current = "idle";
+              audioRoutingRef.current = "passive";
+              passiveSTT.resume();
+            }
+            return;
+          }
+        } catch (err) {
+          // Verification service error — allow through (fail open)
+          console.warn("[AURA] Speaker verification error, allowing through:", err);
+          commandAudioBufferRef.current = [];
+        }
+      } else {
+        commandAudioBufferRef.current = [];
+      }
+
       const entryId = crypto.randomUUID();
 
       try {
         const context = contextBuffer.getContext();
-        const accessToken = authSession?.access_token;
         console.log("[AURA] Sending to API (streaming):", {
           command,
           contextCount: context.length,
@@ -262,7 +356,7 @@ export function useAuraSession(): UseAuraSessionReturn {
         );
       }
     },
-    [passiveSTT, player, startConversationWindow, authSession?.access_token]
+    [passiveSTT, player, startConversationWindow, authSession?.access_token, audio.sampleRate]
   );
 
   const commandSTT = useCommandSTT(handleCommandComplete);
@@ -283,6 +377,7 @@ export function useAuraSession(): UseAuraSessionReturn {
     stateRef.current = "listening";
     audioRoutingRef.current = "command";
     bargeInFrameCountRef.current = 0;
+    commandAudioBufferRef.current = [];
     commandSTT.startListening(audio.sampleRate);
   }, [player, commandSTT, audio.sampleRate, clearConversationTimer]);
 
@@ -307,6 +402,7 @@ export function useAuraSession(): UseAuraSessionReturn {
 
       passiveSTT.pause();
       audioRoutingRef.current = "command";
+      commandAudioBufferRef.current = [];
 
       console.log(
         "[AURA] Starting command STT, sampleRate:",
@@ -412,6 +508,8 @@ export function useAuraSession(): UseAuraSessionReturn {
       // --- Normal routing ---
       if (audioRoutingRef.current === "command") {
         commandSTT.sendAudioChunk(samples, sampleRate);
+        // Also buffer for speaker verification
+        commandAudioBufferRef.current.push(new Int16Array(samples));
       } else {
         passiveSTT.sendAudioChunk(samples, sampleRate);
       }
@@ -559,6 +657,7 @@ export function useAuraSession(): UseAuraSessionReturn {
     fallbackMode: wakeword.fallbackMode,
     errors,
     muted,
+    verificationResult,
     initialize,
     cleanup,
     triggerWakeWord: handleWakeWord,

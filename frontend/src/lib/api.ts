@@ -390,6 +390,75 @@ export async function addConversationMessage(
   return res.json();
 }
 
+// ── Speaker verification ───────────────────────────────────────────
+
+export interface SpeakerEnrollment {
+  id: string;
+  speaker_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// List enrolled speakers
+export async function listSpeakers(accessToken: string): Promise<SpeakerEnrollment[]> {
+  const res = await fetch(`${BACKEND_URL}/api/speakers`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error("Failed to list speakers");
+  const data = await res.json();
+  return data.speakers ?? [];
+}
+
+// Enroll a speaker from audio file
+export async function enrollSpeaker(
+  accessToken: string,
+  speakerName: string,
+  audioBlob: Blob,
+): Promise<{ success: boolean; enrollment_id: string; reference_duration_s: number }> {
+  const formData = new FormData();
+  formData.append("speaker_name", speakerName);
+  formData.append("audio", audioBlob, "enrollment.wav");
+
+  const res = await fetch(`${BACKEND_URL}/api/speakers/enroll`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: formData,
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(detail || `Enrollment failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+// Delete enrolled speaker
+export async function deleteSpeaker(accessToken: string, enrollmentId: string) {
+  const res = await fetch(`${BACKEND_URL}/api/speakers/${enrollmentId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error("Failed to delete speaker");
+  return res.json();
+}
+
+// Verify speaker from audio
+export async function verifySpeaker(
+  accessToken: string,
+  audioBase64: string,
+  sampleRate: number,
+): Promise<{ verified: boolean; speaker_name: string | null; score: number; threshold: number; reason?: string }> {
+  const res = await fetch(`${BACKEND_URL}/api/speakers/verify`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ audio_base64: audioBase64, sample_rate: sampleRate }),
+  });
+  if (!res.ok) throw new Error("Speaker verification failed");
+  return res.json();
+}
+
 // Delete conversation
 export async function deleteConversation(accessToken: string, id: string) {
   const res = await fetch(`${BACKEND_URL}/api/conversations/${id}`, {

@@ -90,6 +90,62 @@ export default function Home() {
         >
           <AuraOrb state={session.state} volume={session.volume} size={140} />
           <StatusBar state={session.state} fallbackMode={session.fallbackMode} />
+
+          {/* Speaker verification feedback */}
+          {session.verificationResult.status !== "none" && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "10px 20px",
+                borderRadius: 12,
+                background: session.verificationResult.status === "verified"
+                  ? "rgba(34, 197, 94, 0.1)"
+                  : "rgba(239, 68, 68, 0.1)",
+                border: `1px solid ${session.verificationResult.status === "verified"
+                  ? "rgba(34, 197, 94, 0.3)"
+                  : "rgba(239, 68, 68, 0.3)"}`,
+                animation: "fadeInScale 0.3s ease-out",
+                marginTop: 4,
+              }}
+            >
+              <div
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: "50%",
+                  background: session.verificationResult.status === "verified"
+                    ? "linear-gradient(135deg, #22c55e, #16a34a)"
+                    : "linear-gradient(135deg, #ef4444, #dc2626)",
+                  color: "white",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 14,
+                  fontWeight: 700,
+                  flexShrink: 0,
+                }}
+              >
+                {session.verificationResult.status === "verified" ? "\u2713" : "\u2717"}
+              </div>
+              <div>
+                <div style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: session.verificationResult.status === "verified" ? "#16a34a" : "#dc2626",
+                }}>
+                  {session.verificationResult.status === "verified"
+                    ? `Voix reconnue : ${session.verificationResult.speakerName}`
+                    : "Personne non reconnue"}
+                </div>
+                <div style={{ fontSize: 11, color: "#6b6560" }}>
+                  Score : {(session.verificationResult.score * 100).toFixed(0)}%
+                </div>
+              </div>
+            </div>
+          )}
+
           <VolumeIndicator volume={session.volume} />
 
           {/* Mute button under the orb */}
