@@ -70,7 +70,9 @@ async def transcribe_audio(api_key: str, wav_data: bytes) -> str:
         result = response.json()
 
     text = result.get("text", "").strip()
-    logger.info("[Mistral-STT] Transcription: '%s'", text[:100])
+    # Log with ASCII-safe text to avoid UnicodeEncodeError in Docker
+    safe = text[:100].encode("ascii", "replace").decode()
+    logger.info("[Mistral-STT] Transcription: '%s'", safe)
     return text
 
 
@@ -115,15 +117,16 @@ async def passive_stt_proxy(websocket: WebSocket):
 
                 if text and is_running:
                     try:
-                        await websocket.send_json({
-                            "type": "committed_transcript",
-                            "text": text
-                        })
+                        # Use ensure_ascii=False for proper Unicode in JSON
+                        import json as _json
+                        payload = _json.dumps({"type": "committed_transcript", "text": text}, ensure_ascii=False)
+                        await websocket.send_text(payload)
                     except Exception:
                         break
 
             except httpx.HTTPStatusError as e:
-                logger.error("[Mistral-STT] API error %d: %s", e.response.status_code, e.response.text[:200])
+                safe_body = e.response.text[:200].encode("ascii", "replace").decode()
+                logger.error("[Mistral-STT] API error %d: %s", e.response.status_code, safe_body)
                 try:
                     await websocket.send_json({
                         "type": "error",
@@ -131,8 +134,10 @@ async def passive_stt_proxy(websocket: WebSocket):
                     })
                 except Exception:
                     break
+            except UnicodeEncodeError as e:
+                logger.error("[Mistral-STT] Unicode error: pos=%d char=%r", e.start, e.object[e.start:e.end] if e.object else "?")
             except Exception as e:
-                logger.error("[Mistral-STT] Error: %s", e)
+                logger.error("[Mistral-STT] Error: %s (%s)", str(e).encode("ascii", "replace").decode(), type(e).__name__)
 
     async def receive_audio():
         nonlocal audio_buffer, sample_rate_ref, is_running
