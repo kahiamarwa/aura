@@ -613,7 +613,10 @@ export function useAuraSession(): UseAuraSessionReturn {
       // 1. Request mic access
       const mic = await audio.requestMicAccess();
 
-      // 2. Start STT + WakeWord in parallel
+      // 2. Start context persistence session (listening sessions + segments)
+      await contextPersistence.startSession();
+
+      // 3. Start STT + WakeWord in parallel
       await Promise.allSettled([
         passiveSTT.start(mic.sampleRate),
         wakeword.startListening(mic.stream),
