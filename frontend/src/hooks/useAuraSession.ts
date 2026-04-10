@@ -141,82 +141,25 @@ export function useAuraSession(): UseAuraSessionReturn {
 
       const accessToken = authSession?.access_token;
 
-      // ── Speaker Verification ──────────────────────────────────────
-      // Combine buffered command audio and verify speaker identity
+      // ── Speaker Verification (in parallel with chat) ──────────────
+      // Start verification as a promise but don't await yet
+      let verifyPromise: Promise<{ verified: boolean; speaker_name: string | null; score: number; reason?: string } | null> = Promise.resolve(null);
+
       if (accessToken && commandAudioBufferRef.current.length > 0) {
-        try {
-          // Concatenate all buffered PCM chunks
-          const totalLen = commandAudioBufferRef.current.reduce((s, c) => s + c.length, 0);
-          const combined = new Int16Array(totalLen);
-          let offset = 0;
-          for (const chunk of commandAudioBufferRef.current) {
-            combined.set(chunk, offset);
-            offset += chunk.length;
-          }
-          commandAudioBufferRef.current = [];
-
-          const audioB64 = int16ToBase64(combined);
-          console.log("[AURA] Verifying speaker, audio samples:", combined.length);
-
-          const verifyResult = await verifySpeaker(accessToken, audioB64, audio.sampleRate);
-          console.log("[AURA] Speaker verification:", verifyResult);
-
-          if (verifyResult.verified) {
-            // Speaker recognized — show green flash
-            setVerificationResult({
-              status: "verified",
-              speakerName: verifyResult.speaker_name,
-              score: verifyResult.score,
-            });
-            // Auto-clear after 4s
-            setTimeout(() => setVerificationResult({ status: "none", speakerName: null, score: 0 }), 4000);
-          }
-
-          if (!verifyResult.verified && verifyResult.reason !== "no_enrollments") {
-            // Impostor detected — show red flash + reject command
-            setVerificationResult({
-              status: "rejected",
-              speakerName: verifyResult.speaker_name,
-              score: verifyResult.score,
-            });
-            // Auto-clear after 5s
-            setTimeout(() => setVerificationResult({ status: "none", speakerName: null, score: 0 }), 5000);
-
-            console.warn("[AURA] Speaker NOT verified, score:", verifyResult.score);
-
-            // Play rejection TTS
-            try {
-              const ttsRes = await fetch(`${BACKEND_URL}/api/tts`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text: "Personne non reconnue par notre systeme." }),
-              });
-              if (ttsRes.ok) {
-                const blob = await ttsRes.blob();
-                setState("speaking");
-                stateRef.current = "speaking";
-                await player.play(blob);
-              }
-            } catch {
-              // TTS failed, just skip audio
-            }
-
-            // Return to conversing/idle without processing the command
-            if (stateRef.current === "speaking") {
-              startConversationWindow();
-            } else {
-              setState("idle");
-              stateRef.current = "idle";
-              audioRoutingRef.current = "passive";
-              passiveSTT.resume();
-            }
-            return;
-          }
-        } catch (err) {
-          // Verification service error — allow through (fail open)
-          console.warn("[AURA] Speaker verification error, allowing through:", err);
-          commandAudioBufferRef.current = [];
+        const totalLen = commandAudioBufferRef.current.reduce((s, c) => s + c.length, 0);
+        const combined = new Int16Array(totalLen);
+        let offset = 0;
+        for (const chunk of commandAudioBufferRef.current) {
+          combined.set(chunk, offset);
+          offset += chunk.length;
         }
+        commandAudioBufferRef.current = [];
+        const audioB64 = int16ToBase64(combined);
+        console.log("[AURA] Verifying speaker (parallel), audio samples:", combined.length);
+        verifyPromise = verifySpeaker(accessToken, audioB64, audio.sampleRate).catch((err) => {
+          console.warn("[AURA] Speaker verification error, allowing through:", err);
+          return null;
+        });
       } else {
         commandAudioBufferRef.current = [];
       }
@@ -322,6 +265,56 @@ export function useAuraSession(): UseAuraSessionReturn {
         // Add Q&A to context buffer for conversational continuity
         contextBuffer.add(`[Commande utilisateur]: ${command}`);
         contextBuffer.add(`[Réponse Aura]: ${result.text}`);
+
+        // ── Check speaker verification before playing TTS ──────────
+        const verifyResult = await verifyPromise;
+        if (verifyResult) {
+          console.log("[AURA] Speaker verification:", verifyResult);
+
+          if (verifyResult.verified) {
+            setVerificationResult({
+              status: "verified",
+              speakerName: verifyResult.speaker_name,
+              score: verifyResult.score,
+            });
+            setTimeout(() => setVerificationResult({ status: "none", speakerName: null, score: 0 }), 4000);
+          }
+
+          if (!verifyResult.verified && verifyResult.reason !== "no_enrollments") {
+            setVerificationResult({
+              status: "rejected",
+              speakerName: verifyResult.speaker_name,
+              score: verifyResult.score,
+            });
+            setTimeout(() => setVerificationResult({ status: "none", speakerName: null, score: 0 }), 5000);
+            console.warn("[AURA] Speaker NOT verified, rejecting. Score:", verifyResult.score);
+
+            // Play rejection TTS instead of the LLM response
+            try {
+              const ttsRes = await fetch(`${BACKEND_URL}/api/tts`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text: "Personne non reconnue par notre systeme." }),
+              });
+              if (ttsRes.ok) {
+                const blob = await ttsRes.blob();
+                setState("speaking");
+                stateRef.current = "speaking";
+                await player.play(blob);
+              }
+            } catch { /* skip */ }
+
+            if (stateRef.current === "speaking") {
+              startConversationWindow();
+            } else {
+              setState("idle");
+              stateRef.current = "idle";
+              audioRoutingRef.current = "passive";
+              passiveSTT.resume();
+            }
+            return;
+          }
+        }
 
         // Play TTS if available
         if (result.audioBlob && result.audioBlob.size > 0) {

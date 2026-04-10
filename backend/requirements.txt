@@ -9,7 +9,5 @@ numpy>=1.21.6
 supabase==2.13.0
 anthropic==0.52.0
 websockets>=12.0
-speechbrain>=1.0.0
-torch>=2.0.0
-torchaudio>=2.0.0
+onnxruntime>=1.17.0
 python-multipart>=0.0.6

@@ -49,12 +49,6 @@ app.include_router(speakers.router)
 
 @app.on_event("startup")
 async def _preload_speaker_model():
-    """Eagerly load SpeechBrain model so the first request isn't slow."""
-    import asyncio
+    """Eagerly load ONNX speaker model so the first request isn't slow."""
     from app.services.speaker_service import SpeakerService
-
-    def _load():
-        SpeakerService.get_instance()
-
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _load)  # non-blocking background load
+    SpeakerService.get_instance()  # ONNX loads in ~100ms

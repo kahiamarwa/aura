@@ -22,12 +22,6 @@ RUN pip install --no-cache-dir tflite-runtime && \
 # Download openwakeword prerequisite models
 RUN python -c "import openwakeword; openwakeword.utils.download_models()"
 
-# Pre-download SpeechBrain ECAPA-TDNN model (~300MB) to avoid cold start
-RUN python -c "\
-from speechbrain.inference import SpeakerRecognition; \
-SpeakerRecognition.from_hparams(source='speechbrain/spkrec-ecapa-voxceleb', savedir='/app/app/services/.speaker_model_cache'); \
-print('SpeechBrain model cached.')"
-
 COPY . .
 
 EXPOSE 8000
