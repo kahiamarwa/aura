@@ -28,11 +28,10 @@ Thumbs.db
 # Claude
 .claude/
 
-# Models (large files)
+# Models (large files — keep .onnx for wake word deployment)
 openwake/venv/
 openwake/*.tflite
 openwake/*.pb
-openwake/*.onnx
 
 # Supabase local CLI cache
 supabase/.temp/

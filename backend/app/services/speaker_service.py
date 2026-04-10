@@ -295,15 +295,15 @@ class SpeakerService:
 
         try:
             cmd = [
-                "ffmpeg", "-i", tmp_path,
+                "ffmpeg", "-nostdin", "-i", tmp_path,
                 "-f", "s16le",
                 "-acodec", "pcm_s16le",
                 "-ar", str(SAMPLE_RATE),
                 "-ac", "1",
                 "-v", "quiet",
-                "pipe:1",
+                "-y", "pipe:1",
             ]
-            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            result = subprocess.run(cmd, capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
             if result.returncode != 0:
                 raise RuntimeError(f"ffmpeg failed: {result.stderr.decode()[:200]}")
             samples = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0

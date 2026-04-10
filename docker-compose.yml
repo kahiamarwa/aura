@@ -5,25 +5,36 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      - CORS_ORIGINS=https://88.223.94.178
+      - CORS_ORIGINS=https://72.60.89.161
     volumes:
       - ./openwake:/openwake:ro
     labels:
       - traefik.enable=true
-      - traefik.http.routers.aura-api.rule=Host(`88.223.94.178`) && PathPrefix(`/api`)
+      # API routes (REST + SSE)
+      - traefik.http.routers.aura-api.rule=Host(`72.60.89.161`) && PathPrefix(`/api`)
       - traefik.http.routers.aura-api.entrypoints=websecure
       - traefik.http.routers.aura-api.tls=true
       - traefik.http.routers.aura-api.priority=10
       - traefik.http.services.aura-api.loadbalancer.server.port=8000
+      # Disable buffering for SSE streaming
+      - traefik.http.middlewares.aura-nobuffer.buffering.maxRequestBodyBytes=52428800
+      - traefik.http.middlewares.aura-nobuffer.buffering.memRequestBodyBytes=52428800
+      - traefik.http.routers.aura-api.middlewares=aura-nobuffer
     networks:
       - root_default
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/stt-token')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
 
   frontend:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_BACKEND_URL: https://88.223.94.178
+        NEXT_PUBLIC_BACKEND_URL: https://72.60.89.161
         NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
         NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
@@ -33,7 +44,7 @@ services:
     container_name: aura-frontend
     labels:
       - traefik.enable=true
-      - traefik.http.routers.aura-front.rule=Host(`88.223.94.178`)
+      - traefik.http.routers.aura-front.rule=Host(`72.60.89.161`)
       - traefik.http.routers.aura-front.entrypoints=websecure
       - traefik.http.routers.aura-front.tls=true
       - traefik.http.routers.aura-front.priority=1
