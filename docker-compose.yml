@@ -6,6 +6,8 @@ services:
       - ./backend/.env
     environment:
       - CORS_ORIGINS=https://aura.hallia.ai,https://backend-aura.hallia.ai
+      - PYTHONIOENCODING=utf-8
+      - PYTHONUNBUFFERED=1
     ports:
       - "8001:8000"
     volumes:

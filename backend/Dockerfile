@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+ENV PYTHONIOENCODING=utf-8
+ENV PYTHONUNBUFFERED=1
+ENV LANG=C.UTF-8
+
 WORKDIR /app
 
 # System deps: ffmpeg (audio conversion), libgomp (ONNX Runtime)
@@ -31,4 +35,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/stt-token')" || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "120"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-keep-alive", "120"]

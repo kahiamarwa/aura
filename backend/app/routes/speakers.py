@@ -239,29 +239,14 @@ async def verify_speaker(raw_request: Request):
             audio = np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
             logger.info("[SpeakerVerify] resampled from %d to 16000 Hz, new len=%d", sample_rate, len(audio))
 
-        # Build speakers list with embeddings and reference audio
+        # Build speakers list with embeddings (cosine similarity only — fast)
         speakers = []
         for enr in enrollments.data:
             emb = service.embedding_from_base64(enr["embedding"])
-            ref_audio = None
-            if enr.get("reference_audio_path"):
-                try:
-                    ref_bytes = supabase.storage.from_("speaker-audio").download(
-                        enr["reference_audio_path"]
-                    )
-                    ref_audio = service._wav_bytes_to_float32(ref_bytes)
-                    logger.info(
-                        "[SpeakerVerify] ref audio for '%s': len=%d, rms=%.4f",
-                        enr["speaker_name"], len(ref_audio),
-                        float(np.sqrt(np.mean(ref_audio**2))),
-                    )
-                except Exception as e:
-                    logger.warning("[SpeakerVerify] Failed to load ref audio for '%s': %s", enr["speaker_name"], e)
-
             speakers.append({
                 "name": enr["speaker_name"],
                 "embedding": emb,
-                "reference_audio": ref_audio,
+                "reference_audio": None,
             })
 
         # Multi-speaker verification
