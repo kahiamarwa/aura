@@ -6,22 +6,10 @@ services:
       - ./backend/.env
     environment:
       - CORS_ORIGINS=https://aura.hallia.ai,https://backend-aura.hallia.ai
+    ports:
+      - "8001:8000"
     volumes:
       - ./openwake:/openwake:ro
-    labels:
-      - traefik.enable=true
-      # Backend API on backend-aura.hallia.ai
-      - traefik.http.routers.aura-api.rule=Host(`backend-aura.hallia.ai`)
-      - traefik.http.routers.aura-api.entrypoints=websecure
-      - traefik.http.routers.aura-api.tls=true
-      - traefik.http.routers.aura-api.tls.certresolver=letsencrypt
-      - traefik.http.services.aura-api.loadbalancer.server.port=8000
-      # SSE streaming + large upload support
-      - traefik.http.middlewares.aura-nobuffer.buffering.maxRequestBodyBytes=52428800
-      - traefik.http.middlewares.aura-nobuffer.buffering.memRequestBodyBytes=52428800
-      - traefik.http.routers.aura-api.middlewares=aura-nobuffer
-    networks:
-      - root_default
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/stt-token')"]
@@ -29,7 +17,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 90s
-
-networks:
-  root_default:
-    external: true

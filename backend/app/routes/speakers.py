@@ -223,6 +223,12 @@ async def verify_speaker(raw_request: Request):
         pcm_bytes = base64.b64decode(audio_b64)
         audio = service.pcm_int16_to_float32(pcm_bytes)
 
+        logger.info(
+            "[SpeakerVerify] input audio: len=%d, rms=%.4f, min=%.4f, max=%.4f",
+            len(audio), float(np.sqrt(np.mean(audio**2))),
+            float(np.min(audio)), float(np.max(audio)),
+        )
+
         # Resample if needed
         sample_rate = body.get("sample_rate", 16000)
         if sample_rate != 16000:
@@ -231,6 +237,7 @@ async def verify_speaker(raw_request: Request):
             target_len = int(duration * 16000)
             indices = np.linspace(0, len(audio) - 1, target_len)
             audio = np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
+            logger.info("[SpeakerVerify] resampled from %d to 16000 Hz, new len=%d", sample_rate, len(audio))
 
         # Build speakers list with embeddings and reference audio
         speakers = []
@@ -243,8 +250,13 @@ async def verify_speaker(raw_request: Request):
                         enr["reference_audio_path"]
                     )
                     ref_audio = service._wav_bytes_to_float32(ref_bytes)
-                except Exception:
-                    pass  # Fallback to cosine similarity
+                    logger.info(
+                        "[SpeakerVerify] ref audio for '%s': len=%d, rms=%.4f",
+                        enr["speaker_name"], len(ref_audio),
+                        float(np.sqrt(np.mean(ref_audio**2))),
+                    )
+                except Exception as e:
+                    logger.warning("[SpeakerVerify] Failed to load ref audio for '%s': %s", enr["speaker_name"], e)
 
             speakers.append({
                 "name": enr["speaker_name"],

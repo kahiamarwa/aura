@@ -209,7 +209,11 @@ class SpeakerService:
         Returns (best_name, best_score, accepted).
         """
         processed = self.preprocess_audio(audio)
+        rms = float(np.sqrt(np.mean(processed**2)))
+        logger.info("[verify_multi] processed audio: len=%d, rms=%.6f, has_speech=%s", len(processed), rms, self.has_speech(processed))
+
         if not self.has_speech(processed):
+            logger.warning("[verify_multi] No speech detected in audio (rms=%.6f, threshold=%.4f)", rms, VAD_THRESHOLD)
             return None, 0.0, False
 
         best_name = None
@@ -220,17 +224,20 @@ class SpeakerService:
             if ref is not None:
                 test_tensor = torch.tensor(processed).unsqueeze(0)
                 ref_tensor = torch.tensor(ref).unsqueeze(0)
-                score_tensor, _ = self.model.verify_batch(test_tensor, ref_tensor)
+                score_tensor, prediction = self.model.verify_batch(test_tensor, ref_tensor)
                 score = score_tensor.item()
+                logger.info("[verify_multi] '%s' verify_batch score=%.4f prediction=%s (ref_len=%d)", spk["name"], score, prediction, len(ref))
             else:
                 emb = self.get_embedding(processed)
                 score = float(np.dot(emb, spk["embedding"]))
+                logger.info("[verify_multi] '%s' cosine score=%.4f", spk["name"], score)
 
             if score > best_score:
                 best_score = score
                 best_name = spk["name"]
 
         accepted = best_score >= SIMILARITY_THRESHOLD
+        logger.info("[verify_multi] RESULT: best=%s score=%.4f accepted=%s (threshold=%.2f)", best_name, best_score, accepted, SIMILARITY_THRESHOLD)
         return best_name, best_score, accepted
 
     # ── Helpers ─────────────────────────────────────────────────────────
