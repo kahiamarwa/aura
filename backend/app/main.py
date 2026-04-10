@@ -1,7 +1,21 @@
+import logging
 import os
+import sys
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# ── Force UTF-8 on all log streams (Docker pipes may default to ASCII) ──
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(stream=open(sys.stdout.fileno(), "w", encoding="utf-8", closefd=False))],
+)
 
 from app.routes import activity, chat, contacts, conversations, discussions, gemini_stt, health, settings, speakers, stt_token, summaries, wakeword
 
@@ -31,3 +45,16 @@ app.include_router(settings.router)
 app.include_router(conversations.router)
 app.include_router(gemini_stt.router)
 app.include_router(speakers.router)
+
+
+@app.on_event("startup")
+async def _preload_speaker_model():
+    """Eagerly load SpeechBrain model so the first request isn't slow."""
+    import asyncio
+    from app.services.speaker_service import SpeakerService
+
+    def _load():
+        SpeakerService.get_instance()
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _load)  # non-blocking background load

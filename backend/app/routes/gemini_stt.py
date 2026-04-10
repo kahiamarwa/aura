@@ -70,7 +70,7 @@ async def transcribe_audio(api_key: str, wav_data: bytes) -> str:
         result = response.json()
 
     text = result.get("text", "").strip()
-    logger.info(f"[Mistral-STT] Transcription: '{text[:100]}'")
+    logger.info("[Mistral-STT] Transcription: '%s'", text[:100])
     return text
 
 
@@ -109,7 +109,7 @@ async def passive_stt_proxy(websocket: WebSocket):
             try:
                 pcm_16k = resample_pcm_16bit(pcm_data, sample_rate_ref, 16000)
                 wav_data = pcm_to_wav(pcm_16k)
-                logger.info(f"[Mistral-STT] Sending {len(wav_data)} bytes WAV")
+                logger.info("[Mistral-STT] Sending %d bytes WAV", len(wav_data))
 
                 text = await transcribe_audio(settings.MISTRAL_API_KEY, wav_data)
 
@@ -123,7 +123,7 @@ async def passive_stt_proxy(websocket: WebSocket):
                         break
 
             except httpx.HTTPStatusError as e:
-                logger.error(f"[Mistral-STT] API error {e.response.status_code}: {e.response.text[:200]}")
+                logger.error("[Mistral-STT] API error %d: %s", e.response.status_code, e.response.text[:200])
                 try:
                     await websocket.send_json({
                         "type": "error",
@@ -132,7 +132,7 @@ async def passive_stt_proxy(websocket: WebSocket):
                 except Exception:
                     break
             except Exception as e:
-                logger.error(f"[Mistral-STT] Error: {e}")
+                logger.error("[Mistral-STT] Error: %s", e)
 
     async def receive_audio():
         nonlocal audio_buffer, sample_rate_ref, is_running
@@ -152,7 +152,7 @@ async def passive_stt_proxy(websocket: WebSocket):
         except WebSocketDisconnect:
             is_running = False
         except Exception as e:
-            logger.error(f"[Mistral-STT] Receive error: {e}")
+            logger.error("[Mistral-STT] Receive error: %s", e)
             is_running = False
 
     try:
