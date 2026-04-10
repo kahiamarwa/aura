@@ -5,18 +5,18 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      - CORS_ORIGINS=https://72.60.89.161
+      - CORS_ORIGINS=https://aura.hallia.ai,https://backend-aura.hallia.ai
     volumes:
       - ./openwake:/openwake:ro
     labels:
       - traefik.enable=true
-      # API routes (REST + SSE)
-      - traefik.http.routers.aura-api.rule=Host(`72.60.89.161`) && PathPrefix(`/api`)
+      # Backend API on backend-aura.hallia.ai
+      - traefik.http.routers.aura-api.rule=Host(`backend-aura.hallia.ai`)
       - traefik.http.routers.aura-api.entrypoints=websecure
       - traefik.http.routers.aura-api.tls=true
-      - traefik.http.routers.aura-api.priority=10
+      - traefik.http.routers.aura-api.tls.certresolver=letsencrypt
       - traefik.http.services.aura-api.loadbalancer.server.port=8000
-      # Disable buffering for SSE streaming
+      # SSE streaming + large upload support
       - traefik.http.middlewares.aura-nobuffer.buffering.maxRequestBodyBytes=52428800
       - traefik.http.middlewares.aura-nobuffer.buffering.memRequestBodyBytes=52428800
       - traefik.http.routers.aura-api.middlewares=aura-nobuffer
@@ -29,29 +29,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 90s
-
-  frontend:
-    build:
-      context: ./frontend
-      args:
-        NEXT_PUBLIC_BACKEND_URL: https://72.60.89.161
-        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
-        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
-        NEXT_PUBLIC_MICROSOFT_CLIENT_ID: ${NEXT_PUBLIC_MICROSOFT_CLIENT_ID:-}
-        NEXT_PUBLIC_HUBSPOT_CLIENT_ID: ${NEXT_PUBLIC_HUBSPOT_CLIENT_ID:-}
-        NEXT_PUBLIC_SLACK_CLIENT_ID: ${NEXT_PUBLIC_SLACK_CLIENT_ID:-}
-    container_name: aura-frontend
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.aura-front.rule=Host(`72.60.89.161`)
-      - traefik.http.routers.aura-front.entrypoints=websecure
-      - traefik.http.routers.aura-front.tls=true
-      - traefik.http.routers.aura-front.priority=1
-      - traefik.http.services.aura-front.loadbalancer.server.port=3000
-    networks:
-      - root_default
-    restart: unless-stopped
 
 networks:
   root_default:
