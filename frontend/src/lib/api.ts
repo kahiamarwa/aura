@@ -459,6 +459,28 @@ export async function verifySpeaker(
   return res.json();
 }
 
+// Classify intent (directed speech detection)
+export async function classifyIntent(
+  accessToken: string,
+  text: string,
+  context: string[],
+): Promise<{ directed: boolean; confidence: number; method: string }> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/classify-intent`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text, context }),
+    });
+    if (!res.ok) return { directed: true, confidence: 0.5, method: "fallback" };
+    return res.json();
+  } catch {
+    return { directed: true, confidence: 0.5, method: "fallback" };
+  }
+}
+
 // Delete conversation
 export async function deleteConversation(accessToken: string, id: string) {
   const res = await fetch(`${BACKEND_URL}/api/conversations/${id}`, {

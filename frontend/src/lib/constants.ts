@@ -12,10 +12,12 @@ export const COLORS = {
 } as const;
 
 // Conversation continuity
-export const CONVERSATION_WINDOW_MS = 8_000; // 8s to reply without wake word
-export const BARGEIN_VOLUME_THRESHOLD = 12; // volume threshold during conversing (0-100)
-export const BARGEIN_VOLUME_THRESHOLD_SPEAKING = 25; // higher threshold during speaking (TTS echo)
-export const BARGEIN_CONSECUTIVE_FRAMES = 3; // consecutive frames above threshold (~300ms)
+export const CONVERSATION_WINDOW_MS = 12_000; // 12s to reply without wake word
+
+// Directed speech detection (Silero VAD replaces volume thresholds)
+export const SPEAKER_VERIFY_BUFFER_MS = 1_500; // buffer 1.5s of audio for speaker verification
+export const SPEAKER_VERIFY_TIMEOUT_MS = 2_000; // max wait for speaker verification response
+export const BARGEIN_VAD_FRAMES_SPEAKING = 5;   // VAD speech frames to trigger barge-in during TTS
 
 // Timeouts
 export const COMMAND_TIMEOUT_MS = 30_000;

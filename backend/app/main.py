@@ -17,7 +17,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(stream=open(sys.stdout.fileno(), "w", encoding="utf-8", closefd=False))],
 )
 
-from app.routes import activity, chat, contacts, conversations, discussions, gemini_stt, health, settings, speakers, stt_token, summaries, wakeword
+from app.routes import activity, chat, contacts, conversations, discussions, gemini_stt, health, intent_classifier, settings, speakers, stt_token, summaries, wakeword
 
 app = FastAPI(title="AURA POC Backend")
 
@@ -45,6 +45,7 @@ app.include_router(settings.router)
 app.include_router(conversations.router)
 app.include_router(gemini_stt.router)
 app.include_router(speakers.router)
+app.include_router(intent_classifier.router)
 
 
 @app.on_event("startup")
