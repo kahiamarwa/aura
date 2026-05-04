@@ -15,7 +15,7 @@ async def wakeword_ws(websocket: WebSocket):
     await websocket.accept()
     print("[WakeWord] WebSocket CONNECTED")
     service = WakeWordService.get_instance()
-    print(f"[WakeWord] Model loaded, names={service.model_names}, threshold={service.threshold}")
+    print(f"[WakeWord] Model loaded, names={service.model_names}, thresholds={service.THRESHOLDS}")
 
     frame_count = 0
     try:

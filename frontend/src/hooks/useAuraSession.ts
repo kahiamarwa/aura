@@ -8,18 +8,20 @@ import { usePassiveSTT } from "./usePassiveSTT";
 import { useCommandSTT } from "./useCommandSTT";
 import { useOpenWakeWord } from "./useOpenWakeWord";
 import { useAudioPlayer } from "./useAudioPlayer";
-import { useSileroVAD } from "./useSileroVAD";
-import { useDirectedSpeech } from "./useDirectedSpeech";
 import { useAuthContext } from "@/context/AuthContext";
-import { sendChat, sendChatStream, createConversation, addConversationMessage, listConversations, fetchConversationDetail, verifySpeaker } from "@/lib/api";
+import { sendChat, sendChatStream, createConversation, addConversationMessage, listConversations, fetchConversationDetail, verifySpeaker, classifyIntent } from "@/lib/api";
 import { int16ToBase64 } from "@/lib/audioUtils";
 import { contextBuffer } from "@/lib/contextBuffer";
 import { contextPersistence } from "@/lib/contextPersistence";
 import {
   BACKEND_URL,
   CONVERSATION_WINDOW_MS,
-  BARGEIN_VAD_FRAMES_SPEAKING,
 } from "@/lib/constants";
+
+// Volume thresholds for conversing state speech detection
+const CONVERSING_VOLUME_THRESHOLD = 15;
+const SPEAKING_VOLUME_THRESHOLD = 25;
+const CONSECUTIVE_FRAMES_THRESHOLD = 3;
 
 export interface VerificationResult {
   status: "none" | "verified" | "rejected";
@@ -85,17 +87,17 @@ export function useAuraSession(): UseAuraSessionReturn {
   const conversationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
-  const bargeInVADFramesRef = useRef(0); // VAD speech frames for barge-in during speaking
+  const bargeInFrameCountRef = useRef(0);
   const conversationIdRef = useRef<string | null>(null);
   const commandAudioBufferRef = useRef<Int16Array[]>([]);
   const lastResponseRef = useRef<string>("");
+  const triggeredFromConversingRef = useRef(false); // track if command came from conversing
 
   const { session: authSession } = useAuthContext();
   const audio = useAudioCapture();
   const passiveSTT = usePassiveSTT();
   const player = useAudioPlayer();
   const wakeword = useOpenWakeWord();
-  const sileroVAD = useSileroVAD();
 
   // Clear conversation timer helper
   const clearConversationTimer = useCallback(() => {
@@ -110,7 +112,7 @@ export function useAuraSession(): UseAuraSessionReturn {
     clearConversationTimer();
     setState("conversing");
     stateRef.current = "conversing";
-    bargeInVADFramesRef.current = 0;
+    bargeInFrameCountRef.current = 0;
     // passiveSTT stays paused — we don't want ambient noise during conversation
 
     conversationTimerRef.current = setTimeout(() => {
@@ -127,25 +129,50 @@ export function useAuraSession(): UseAuraSessionReturn {
   const handleCommandComplete = useCallback(
     async (command: string) => {
       console.log("[AURA] handleCommandComplete called, command:", command);
+      const wasFromConversing = triggeredFromConversingRef.current;
+      triggeredFromConversingRef.current = false;
+
       if (!command.trim()) {
-        console.log("[AURA] Empty command, returning to idle");
-        setState("idle");
-        stateRef.current = "idle";
-        audioRoutingRef.current = "passive";
-        passiveSTT.resume();
+        console.log("[AURA] Empty command, returning to conversing/idle");
+        if (wasFromConversing) {
+          startConversationWindow();
+        } else {
+          setState("idle");
+          stateRef.current = "idle";
+          audioRoutingRef.current = "passive";
+          passiveSTT.resume();
+        }
         return;
+      }
+
+      const accessToken = authSession?.access_token;
+
+      // ── Intent Classification (only for commands from conversing state) ──
+      // Ask Claude Haiku if this speech is directed at Aura or ambient conversation
+      if (wasFromConversing && accessToken) {
+        console.log("[AURA] Classifying intent (from conversing):", command.substring(0, 60));
+        try {
+          const context = lastResponseRef.current ? [lastResponseRef.current] : [];
+          const intentResult = await classifyIntent(accessToken, command, context);
+          console.log("[AURA] Intent result:", intentResult);
+
+          if (!intentResult.directed) {
+            console.log("[AURA] Not directed at Aura → returning to conversing");
+            // Not for Aura — go back to conversing silently
+            commandAudioBufferRef.current = [];
+            startConversationWindow();
+            return;
+          }
+        } catch (err) {
+          console.warn("[AURA] Intent classification failed, allowing through:", err);
+        }
       }
 
       // Transition to thinking
       setState("thinking");
       stateRef.current = "thinking";
 
-      const accessToken = authSession?.access_token;
-
-      // ── Speaker Verification (in parallel with chat) ──────────────
-      // Start verification as a promise but don't await yet
-      let verifyPromise: Promise<{ verified: boolean; speaker_name: string | null; score: number; reason?: string } | null> = Promise.resolve(null);
-
+      // ── Speaker Verification (always blocking, before chat) ──────
       if (accessToken && commandAudioBufferRef.current.length > 0) {
         const totalLen = commandAudioBufferRef.current.reduce((s, c) => s + c.length, 0);
         const combined = new Int16Array(totalLen);
@@ -156,11 +183,33 @@ export function useAuraSession(): UseAuraSessionReturn {
         }
         commandAudioBufferRef.current = [];
         const audioB64 = int16ToBase64(combined);
-        console.log("[AURA] Verifying speaker (parallel), audio samples:", combined.length);
-        verifyPromise = verifySpeaker(accessToken, audioB64, audio.sampleRate).catch((err) => {
+        console.log("[AURA] Verifying speaker, audio samples:", combined.length);
+
+        try {
+          const verifyResult = await verifySpeaker(accessToken, audioB64, audio.sampleRate);
+          console.log("[AURA] Speaker verification:", verifyResult);
+
+          if (verifyResult.verified) {
+            setVerificationResult({
+              status: "verified",
+              speakerName: verifyResult.speaker_name,
+              score: verifyResult.score,
+            });
+            setTimeout(() => setVerificationResult({ status: "none", speakerName: null, score: 0 }), 4000);
+          } else if (verifyResult.reason !== "no_enrollments") {
+            console.warn("[AURA] Speaker NOT verified → returning to conversing");
+            setVerificationResult({
+              status: "rejected",
+              speakerName: verifyResult.speaker_name,
+              score: verifyResult.score,
+            });
+            setTimeout(() => setVerificationResult({ status: "none", speakerName: null, score: 0 }), 5000);
+            startConversationWindow();
+            return;
+          }
+        } catch (err) {
           console.warn("[AURA] Speaker verification error, allowing through:", err);
-          return null;
-        });
+        }
       } else {
         commandAudioBufferRef.current = [];
       }
@@ -268,57 +317,7 @@ export function useAuraSession(): UseAuraSessionReturn {
         contextBuffer.add(`[Réponse Aura]: ${result.text}`);
         lastResponseRef.current = result.text;
 
-        // ── Check speaker verification before playing TTS ──────────
-        const verifyResult = await verifyPromise;
-        if (verifyResult) {
-          console.log("[AURA] Speaker verification:", verifyResult);
-
-          if (verifyResult.verified) {
-            setVerificationResult({
-              status: "verified",
-              speakerName: verifyResult.speaker_name,
-              score: verifyResult.score,
-            });
-            setTimeout(() => setVerificationResult({ status: "none", speakerName: null, score: 0 }), 4000);
-          }
-
-          if (!verifyResult.verified && verifyResult.reason !== "no_enrollments") {
-            setVerificationResult({
-              status: "rejected",
-              speakerName: verifyResult.speaker_name,
-              score: verifyResult.score,
-            });
-            setTimeout(() => setVerificationResult({ status: "none", speakerName: null, score: 0 }), 5000);
-            console.warn("[AURA] Speaker NOT verified, rejecting. Score:", verifyResult.score);
-
-            // Play rejection TTS instead of the LLM response
-            try {
-              const ttsRes = await fetch(`${BACKEND_URL}/api/tts`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text: "Personne non reconnue par notre systeme." }),
-              });
-              if (ttsRes.ok) {
-                const blob = await ttsRes.blob();
-                setState("speaking");
-                stateRef.current = "speaking";
-                await player.play(blob);
-              }
-            } catch { /* skip */ }
-
-            if (stateRef.current === "speaking") {
-              startConversationWindow();
-            } else {
-              setState("idle");
-              stateRef.current = "idle";
-              audioRoutingRef.current = "passive";
-              passiveSTT.resume();
-            }
-            return;
-          }
-        }
-
-        // Play TTS if available
+        // Speaker already verified above — play TTS
         if (result.audioBlob && result.audioBlob.size > 0) {
           setState("speaking");
           stateRef.current = "speaking";
@@ -360,74 +359,42 @@ export function useAuraSession(): UseAuraSessionReturn {
   const enterListeningFromConversation = useCallback(() => {
     clearConversationTimer();
 
-    // If speaking, stop TTS immediately
     if (stateRef.current === "speaking") {
       console.log("[AURA] Barge-in: stopping TTS");
       player.stop();
     }
+
+    // Track that this command came from conversing/barge-in (not wake word)
+    // → Haiku intent check + blocking speaker verify before chat
+    triggeredFromConversingRef.current = true;
 
     console.log("[AURA] Entering listening from conversation/barge-in");
     playBeep();
     setState("listening");
     stateRef.current = "listening";
     audioRoutingRef.current = "command";
-    bargeInVADFramesRef.current = 0;
+    bargeInFrameCountRef.current = 0;
     commandAudioBufferRef.current = [];
-    sileroVAD.reset();
     commandSTT.startListening(audio.sampleRate);
-  }, [player, commandSTT, audio.sampleRate, clearConversationTimer, sileroVAD]);
+  }, [player, commandSTT, audio.sampleRate, clearConversationTimer]);
 
-  // Directed speech detection pipeline (conversing state)
-  const directedSpeech = useDirectedSpeech({
-    getAccessToken: () => authSession?.access_token,
-    getSampleRate: () => audio.sampleRate,
-    enterListening: () => {
-      clearConversationTimer();
-      if (stateRef.current === "speaking") {
-        player.stop();
-      }
-      console.log("[AURA] Directed speech → entering listening");
-      playBeep();
-      setState("listening");
-      stateRef.current = "listening";
-      audioRoutingRef.current = "command";
-      commandAudioBufferRef.current = [];
-    },
-    getCommandSTT: () => commandSTT,
-    getLastResponse: () => lastResponseRef.current,
-  });
-
-  // Wire VAD callbacks to directed speech pipeline
-  useEffect(() => {
-    sileroVAD.onSpeechStart(() => {
-      const currentState = stateRef.current;
-
-      // During conversing: start the directed speech pipeline
-      if (currentState === "conversing") {
-        directedSpeech.onVADSpeechStart();
-      }
-
-      // During speaking: barge-in via VAD
-      if (currentState === "speaking") {
-        bargeInVADFramesRef.current++;
-        if (bargeInVADFramesRef.current >= BARGEIN_VAD_FRAMES_SPEAKING) {
-          enterListeningFromConversation();
-        }
-      }
-    });
-
-    sileroVAD.onSpeechEnd(() => {
-      bargeInVADFramesRef.current = 0;
-      directedSpeech.onVADSpeechEnd();
-    });
-  }, [sileroVAD, directedSpeech, enterListeningFromConversation]);
-
-  const handleWakeWord = useCallback(() => {
+  const handleWakeWord = useCallback((type: "activate" | "interrupt" = "activate") => {
     console.log(
-      "[AURA] handleWakeWord triggered, current state:",
+      `[AURA] handleWakeWord triggered (${type}), current state:`,
       stateRef.current
     );
-    if (stateRef.current === "speaking") {
+
+    // "Stop Aura" — interrupt TTS and enter listening immediately
+    if (type === "interrupt") {
+      if (stateRef.current === "speaking") {
+        console.log("[AURA] Stop-Aura: interrupting TTS");
+        player.stop();
+      }
+      // Only interrupt makes sense while speaking or conversing
+      if (stateRef.current !== "speaking" && stateRef.current !== "conversing") {
+        return;
+      }
+    } else if (stateRef.current === "speaking") {
       player.stop();
     }
 
@@ -509,25 +476,39 @@ export function useAuraSession(): UseAuraSessionReturn {
     }
   }, [authSession?.access_token]);
 
-  // Route PCM chunks to the correct STT + barge-in
+  // Route PCM chunks to the correct STT + barge-in / conversation detection
   const handlePCMChunk = useCallback(
     (samples: Int16Array, sampleRate: number) => {
       if (mutedRef.current) return;
 
       const currentState = stateRef.current;
 
-      // During conversing: audio routing handled by directed speech pipeline (via 16kHz stream)
-      // We don't route 48kHz chunks during conversing — the pipeline uses 16kHz directly
-      if (currentState === "conversing") {
-        return;
+      // --- Speaking/Conversing: volume-based speech detection ---
+      if (currentState === "speaking" || currentState === "conversing") {
+        let sumSq = 0;
+        for (let i = 0; i < samples.length; i++) {
+          sumSq += samples[i] * samples[i];
+        }
+        const rms = Math.sqrt(sumSq / samples.length);
+        const volumePercent = Math.min(100, Math.round((rms / 32768) * 100 * 3));
+
+        const threshold = currentState === "speaking"
+          ? SPEAKING_VOLUME_THRESHOLD
+          : CONVERSING_VOLUME_THRESHOLD;
+
+        if (volumePercent > threshold) {
+          bargeInFrameCountRef.current++;
+          if (bargeInFrameCountRef.current >= CONSECUTIVE_FRAMES_THRESHOLD) {
+            enterListeningFromConversation();
+            return;
+          }
+        } else {
+          bargeInFrameCountRef.current = 0;
+        }
+        return; // Don't route audio during speaking/conversing
       }
 
-      // During speaking: no routing (TTS is playing), barge-in handled by VAD on 16kHz stream
-      if (currentState === "speaking") {
-        return;
-      }
-
-      // Normal routing (idle, listening, thinking)
+      // --- Normal routing (idle, listening, thinking) ---
       if (audioRoutingRef.current === "command") {
         commandSTT.sendAudioChunk(samples, sampleRate);
         commandAudioBufferRef.current.push(new Int16Array(samples));
@@ -535,7 +516,7 @@ export function useAuraSession(): UseAuraSessionReturn {
         passiveSTT.sendAudioChunk(samples, sampleRate);
       }
     },
-    [commandSTT, passiveSTT]
+    [commandSTT, passiveSTT, enterListeningFromConversation]
   );
 
   // Register PCM callback
@@ -543,39 +524,17 @@ export function useAuraSession(): UseAuraSessionReturn {
     audio.onPCMChunk(handlePCMChunk);
   }, [audio, handlePCMChunk]);
 
-  // Register PCM 16kHz callback for wake word + VAD + directed speech
+  // Register PCM 16kHz callback for wake word
   useEffect(() => {
     audio.onPCM16kChunk((samples: Int16Array) => {
-      // Always send to wake word (all states)
       wakeword.sendAudio(samples);
-
-      const currentState = stateRef.current;
-
-      // During speaking or conversing: feed to VAD for speech detection
-      if (currentState === "speaking" || currentState === "conversing") {
-        sileroVAD.processFrame(samples);
-      }
-
-      // During conversing: also feed to directed speech pipeline (buffering + verification)
-      if (currentState === "conversing") {
-        directedSpeech.feedAudio(samples);
-      }
     });
-  }, [audio, wakeword, sileroVAD, directedSpeech]);
+  }, [audio, wakeword]);
 
   // Register wake word callback
   useEffect(() => {
     wakeword.onKeywordDetected(handleWakeWord);
   }, [wakeword, handleWakeWord]);
-
-  // Activate/deactivate directed speech pipeline based on state
-  useEffect(() => {
-    if (state === "conversing") {
-      directedSpeech.activate();
-    } else {
-      directedSpeech.deactivate();
-    }
-  }, [state, directedSpeech]);
 
   // Update passive entries periodically
   useEffect(() => {
@@ -659,11 +618,10 @@ export function useAuraSession(): UseAuraSessionReturn {
       // 2. Start context persistence session (listening sessions + segments)
       await contextPersistence.startSession();
 
-      // 3. Start STT + WakeWord + Silero VAD in parallel
+      // 3. Start STT + WakeWord in parallel
       await Promise.allSettled([
         passiveSTT.start(mic.sampleRate),
         wakeword.startListening(mic.stream),
-        sileroVAD.initialize(),
       ]);
 
       // Ready
@@ -671,7 +629,6 @@ export function useAuraSession(): UseAuraSessionReturn {
       stateRef.current = "idle";
       audioRoutingRef.current = "passive";
     } catch (err) {
-      // Only mic access failure reaches here
       setState("error");
       stateRef.current = "error";
       setErrors((prev) => [
@@ -679,19 +636,17 @@ export function useAuraSession(): UseAuraSessionReturn {
         err instanceof Error ? err.message : "Erreur initialisation",
       ]);
     }
-  }, [audio, passiveSTT, wakeword, sileroVAD, clearConversationTimer, authSession?.access_token]);
+  }, [audio, passiveSTT, wakeword, clearConversationTimer, authSession?.access_token]);
 
   const cleanup = useCallback(() => {
     clearConversationTimer();
     passiveSTT.stop();
     wakeword.stopListening();
-    sileroVAD.destroy();
-    directedSpeech.deactivate();
     audio.stopMic();
     contextPersistence.endSession();
     setState("initializing");
     stateRef.current = "initializing";
-  }, [passiveSTT, wakeword, sileroVAD, directedSpeech, audio, clearConversationTimer]);
+  }, [passiveSTT, wakeword, audio, clearConversationTimer]);
 
   return {
     state,

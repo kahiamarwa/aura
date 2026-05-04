@@ -104,6 +104,25 @@ export function useCommandSTT(
   const startListening = useCallback(
     async (sampleRate: number) => {
       try {
+        // Close any previous WebSocket before opening a new one
+        if (wsRef.current) {
+          wsRef.current.onclose = null;
+          wsRef.current.onmessage = null;
+          wsRef.current.onerror = null;
+          if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
+            wsRef.current.close();
+          }
+          wsRef.current = null;
+        }
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = null;
+        }
+        if (timeoutTimerRef.current) {
+          clearTimeout(timeoutTimerRef.current);
+          timeoutTimerRef.current = null;
+        }
+
         setError(null);
         setPartialText("");
         setCommittedText("");
