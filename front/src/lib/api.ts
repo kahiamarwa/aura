@@ -1,4 +1,4 @@
-import { BACKEND_URL } from "./constants";
+import { BACKEND_URL, EDGE_URL } from "./constants";
 
 export interface TranscriptionSegment {
   text: string;
@@ -401,7 +401,7 @@ export interface SpeakerEnrollment {
 
 // List enrolled speakers
 export async function listSpeakers(accessToken: string): Promise<SpeakerEnrollment[]> {
-  const res = await fetch(`${BACKEND_URL}/api/speakers`, {
+  const res = await fetch(`${EDGE_URL}/api/speakers`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) throw new Error("Failed to list speakers");
@@ -419,7 +419,7 @@ export async function enrollSpeaker(
   formData.append("speaker_name", speakerName);
   formData.append("audio", audioBlob, "enrollment.wav");
 
-  const res = await fetch(`${BACKEND_URL}/api/speakers/enroll`, {
+  const res = await fetch(`${EDGE_URL}/api/speakers/enroll`, {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}` },
     body: formData,
@@ -433,7 +433,7 @@ export async function enrollSpeaker(
 
 // Delete enrolled speaker
 export async function deleteSpeaker(accessToken: string, enrollmentId: string) {
-  const res = await fetch(`${BACKEND_URL}/api/speakers/${enrollmentId}`, {
+  const res = await fetch(`${EDGE_URL}/api/speakers/${enrollmentId}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${accessToken}` },
   });
@@ -447,7 +447,7 @@ export async function verifySpeaker(
   audioBase64: string,
   sampleRate: number,
 ): Promise<{ verified: boolean; speaker_name: string | null; score: number; threshold: number; reason?: string }> {
-  const res = await fetch(`${BACKEND_URL}/api/speakers/verify`, {
+  const res = await fetch(`${EDGE_URL}/api/speakers/verify`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,

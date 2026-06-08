@@ -1,6 +1,11 @@
 export const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
+// Edge / Raspberry device backend (wake word + speaker verification).
+// Runs separately from the cloud backend (BACKEND_URL).
+export const EDGE_URL =
+  process.env.NEXT_PUBLIC_EDGE_URL || "http://localhost:8001";
+
 // Colors
 export const COLORS = {
   idle: "#3b82f6",

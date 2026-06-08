@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BACKEND_URL } from "@/lib/constants";
+import { EDGE_URL } from "@/lib/constants";
 
 type FallbackMode = "custom" | "push-to-talk";
 type WakeWordType = "activate" | "interrupt";
@@ -47,7 +47,7 @@ export function useOpenWakeWord(): UseOpenWakeWordReturn {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
     try {
-      const wsUrl = BACKEND_URL.replace(/^http/, "ws") + "/api/wakeword";
+      const wsUrl = EDGE_URL.replace(/^http/, "ws") + "/api/wakeword";
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer";
 

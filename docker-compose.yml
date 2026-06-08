@@ -1,9 +1,9 @@
 services:
   backend:
-    build: ./backend
+    build: ./raspberry/backend
     container_name: aura-backend
     env_file:
-      - ./backend/.env
+      - ./raspberry/backend/.env
     environment:
       - CORS_ORIGINS=https://aura.hallia.ai,https://backend-aura.hallia.ai
       - PYTHONIOENCODING=utf-8
@@ -11,10 +11,10 @@ services:
     ports:
       - "8001:8000"
     volumes:
-      - ./openwake:/openwake:ro
+      - ./raspberry/openwake:/openwake:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/stt-token')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3

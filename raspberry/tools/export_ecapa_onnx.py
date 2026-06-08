@@ -1,9 +1,9 @@
 """Export SpeechBrain ECAPA-TDNN to ONNX format (single file, no external data).
 
-Run once locally (requires torch + speechbrain):
-    python3 scripts/export_ecapa_onnx.py
+Run once locally from the repo root (requires torch + speechbrain):
+    python3 raspberry/tools/export_ecapa_onnx.py
 
-Produces: backend/app/services/ecapa_tdnn.onnx (~25MB)
+Produces: raspberry/backend/app/services/ecapa_tdnn.onnx (~25MB)
 """
 
 import os
@@ -12,8 +12,8 @@ import numpy as np
 from speechbrain.inference import SpeakerRecognition
 
 MODEL_SOURCE = "speechbrain/spkrec-ecapa-voxceleb"
-CACHE_DIR = "backend/app/services/.speaker_model_cache"
-OUTPUT_PATH = "backend/app/services/ecapa_tdnn.onnx"
+CACHE_DIR = "raspberry/backend/app/services/.speaker_model_cache"
+OUTPUT_PATH = "raspberry/backend/app/services/ecapa_tdnn.onnx"
 
 print("[1/4] Loading SpeechBrain model...")
 model = SpeakerRecognition.from_hparams(source=MODEL_SOURCE, savedir=CACHE_DIR)

@@ -29,21 +29,22 @@ Thumbs.db
 .claude/
 
 # Models (large files — keep .onnx for wake word deployment)
-openwake/venv/
-openwake/*.tflite
-openwake/*.pb
+raspberry/openwake/venv/
+raspberry/openwake/*.tflite
+raspberry/openwake/*.pb
 
 # Supabase local CLI cache
-supabase/.temp/
+back/supabase/.temp/
 
 # Docs / specs (keep local only)
 AURA_Audio_Pipeline_Spec.md
 AURA_POC_Spec_v2_ElevenLabs.md
-HARDWARE_PROTOTYPE.md
-PLAN_OPENWAKEWORD_INTEGRATION.md
 elevenlabs-doc*.md
 integrations-marwa/
 test_ppt.py
 
+# Playwright MCP
+.playwright-mcp/
+
 # Speaker model cache (SpeechBrain)
-backend/app/services/.speaker_model_cache/
+raspberry/backend/app/services/.speaker_model_cache/

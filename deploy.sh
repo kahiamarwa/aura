@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 
 # Pull latest code
 echo ">>> Pulling latest code..."
-git pull origin frontend
+git pull origin raspberry_aura
 
 # Build and restart containers
 echo ">>> Building Docker images..."
