@@ -124,6 +124,7 @@ class Orchestrator:
 
     # ── THINKING : cloud (gated) → audio ou statut ───────────────────
     def _handle_command(self, pcm: np.ndarray, from_conversing: bool, frames) -> tuple[str, bool]:
+        self._spoke = False
         logger.info("[state] THINKING — envoi au cloud (from_conversing=%s)…", from_conversing)
         try:
             res = cloud.converse(pcm, from_conversing, self.ambient.get_context())
@@ -147,6 +148,7 @@ class Orchestrator:
 
         logger.info("[USER] %s", res.get("transcript", ""))
         logger.info("[AURA] %s", res.get("response", ""))
+        self._spoke = True
         barge = self._speak(res["mp3"], frames)
         # Barge-in pendant la réponse = l'utilisateur enchaîne → réécoute (intent gating)
         return ("LISTENING", True) if barge else ("CONVERSING", False)
@@ -189,19 +191,20 @@ class Orchestrator:
         logger.info("[state] CONVERSING — répondez (ou « Dis Aura »), %.0fs", config.CONVERSATION_WINDOW_S)
         self.ambient.set_enabled(False)
         deadline = time.time() + config.CONVERSATION_WINDOW_S
+        # Follow-up sans wake word UNIQUEMENT si la voix est enrôlée
+        # (sinon le bruit/YouTube re-déclencherait en boucle).
+        allow_followup = self.target.has_reference
         speech = 0
         for frame in frames:
             if time.time() >= deadline:
                 return "IDLE", False
             ev = self.wake.process(frame)
-            if ev == "activate":
-                return "LISTENING", False        # wake word explicite
-            if ev == "interrupt":
-                return "LISTENING", False
-            if _rms(frame) >= config.CONVERSING_RMS:
+            if ev in ("activate", "interrupt"):
+                return "LISTENING", False        # wake word explicite (toujours)
+            if allow_followup and _rms(frame) >= config.CONVERSING_RMS:
                 speech += 1
                 if speech >= config.FOLLOWUP_SPEECH_FRAMES:
-                    return "LISTENING", True      # follow-up sans wake word
+                    return "LISTENING", True      # follow-up gated en LISTENING (locuteur cible)
             else:
                 speech = 0
         return "IDLE", False
@@ -215,8 +218,10 @@ class Orchestrator:
             frames = mic.frames()
             self.state = "IDLE"
             from_conversing = False
+            wasted = 0   # garde-fou : commandes consécutives sans réponse → IDLE
             while True:
                 if self.state == "IDLE":
+                    wasted = 0
                     self.ambient.set_enabled(True)
                     frame = next(frames)
                     self.ambient.feed(frame)          # contexte ambiant
@@ -226,9 +231,15 @@ class Orchestrator:
                 elif self.state == "LISTENING":
                     pcm = self._record_command(frames)
                     if pcm is None:
-                        self.state, from_conversing = ("CONVERSING", from_conversing) if from_conversing else ("IDLE", False)
+                        wasted += 1
+                        self.state, from_conversing = ("CONVERSING", False) if from_conversing else ("IDLE", False)
                     else:
                         self.state, from_conversing = self._handle_command(pcm, from_conversing, frames)
+                        wasted = 0 if getattr(self, "_spoke", False) else wasted + 1
+                    # 2 cycles sans réponse d'affilée → retour IDLE (anti-boucle)
+                    if wasted >= 2 and self.state == "CONVERSING":
+                        logger.info("[guard] %d commandes sans réponse → IDLE (dites « Dis Aura »)", wasted)
+                        self.state, from_conversing = "IDLE", False
 
                 elif self.state == "CONVERSING":
                     self.state, from_conversing = self._conversing(frames)
