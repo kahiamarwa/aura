@@ -22,6 +22,7 @@ from app.routes import (
     chat,
     contacts,
     conversations,
+    device_speakers,
     discussions,
     gemini_stt,
     health,
@@ -56,3 +57,4 @@ app.include_router(settings.router)
 app.include_router(conversations.router)
 app.include_router(gemini_stt.router)
 app.include_router(intent_classifier.router)
+app.include_router(device_speakers.router)
