@@ -52,7 +52,7 @@ CMD_MIN_SPEECH_S = 0.3        # parole min pour considérer une vraie commande
 # L'enceinte s'arrête quand TA voix s'arrête, en ignorant les autres voix.
 TARGET_WINDOW_S = 1.5          # fenêtre glissante pour décider "c'est lui ?"
 TARGET_HOP_S = 0.4            # cadence de décision (toutes les 0.4 s)
-TARGET_HANG_S = 1.2           # absence consécutive de TA voix pour clore
+TARGET_HANG_S = float(os.getenv("TARGET_HANG_S", "2.0"))   # absence de TA voix pour clore (tolère les pauses de réflexion)
 TARGET_MISS_HYSTERESIS = 2    # fenêtres "pas lui" consécutives avant de compter l'absence
 TARGET_WAIT_START_S = 4.0     # si TA voix n'apparaît jamais après le wake word → abandon
 
