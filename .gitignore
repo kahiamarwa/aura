@@ -48,3 +48,10 @@ test_ppt.py
 
 # Speaker model cache (SpeechBrain)
 raspberry/backend/app/services/.speaker_model_cache/
+
+# Device orchestrator (Pi)
+raspberry/device/venv/
+raspberry/device/__pycache__/
+raspberry/device/.env
+**/__pycache__/
+*.pyc

@@ -5,6 +5,7 @@ Lecture : MP3 décodé par `mpg123` (léger, standard sur Raspberry Pi OS),
           interruptible (pour le barge-in / "Stop Aura").
 """
 
+import os
 import queue
 import logging
 import subprocess
@@ -84,7 +85,13 @@ class MicStream:
 
 
 def play_beep(freq: float = 880.0, dur: float = 0.15, gain: float = 0.25):
-    """Petit bip de confirmation d'écoute (best-effort, ignoré si erreur)."""
+    """Bip de confirmation d'écoute. Désactivé par défaut (AURA_BEEP=1 pour activer).
+
+    Beaucoup de cartes (ex: micro USB entrée seule) n'ont pas de sortie
+    sounddevice utilisable → on évite le bruit ALSA. Le TTS passe par mpg123.
+    """
+    if os.getenv("AURA_BEEP", "0") != "1":
+        return
     try:
         sr = 16000
         t = np.linspace(0, dur, int(sr * dur), endpoint=False)
