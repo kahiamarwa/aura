@@ -122,6 +122,19 @@ class Orchestrator:
             return None
         return pcm
 
+    # ── Helper : la fenêtre contient-elle la voix de l'UTILISATEUR ? ──
+    def _user_in_window(self, window: np.ndarray) -> bool:
+        """True si la voix de l'utilisateur enrôlé est présente (locuteur cible).
+
+        Sert au barge-in et au follow-up : seul l'utilisateur (pas YouTube ni
+        la voix d'Aura elle-même) peut interrompre/relancer. Suppose une
+        empreinte en cache (sinon ces déclencheurs restent désactivés).
+        """
+        if _rms(window) < config.CMD_SILENCE_RMS * 0.5:
+            return False
+        is_user, _ = self.target.is_target(window)
+        return bool(is_user)
+
     # ── THINKING : cloud (gated) → audio ou statut ───────────────────
     def _handle_command(self, pcm: np.ndarray, from_conversing: bool, frames) -> tuple[str, bool]:
         self._spoke = False
@@ -161,27 +174,36 @@ class Orchestrator:
         t = threading.Thread(target=self.player.play_mp3, args=(mp3,), daemon=True)
         t.start()
         logger.info("[state] SPEAKING — (« Stop Aura » pour couper)")
-        loud = 0
+        gated = self.target.has_reference   # barge-in vocal seulement si enrôlé
+        win = np.zeros(0, dtype=np.int16)
+        win_max = int(1.0 * config.SAMPLE_RATE)
+        hop = 0.0
+        streak = 0
         while t.is_alive():
             try:
                 frame = next(frames)
             except StopIteration:
                 break
             ev = self.wake.process(frame)
-            # ANTI-ÉCHO : on ignore 'activate' (Aura s'entend elle-même) ;
-            # seul 'Stop Aura' (interrupt) ou une parole forte coupe.
+            # ANTI-ÉCHO : 'activate' ignoré (Aura s'entend) ; 'Stop Aura' coupe toujours.
             if ev == "interrupt":
                 logger.info("[state] STOP — coupure")
                 self.player.stop()
                 return True
-            if _rms(frame) >= config.SPEAKING_RMS:
-                loud += 1
-                if loud >= config.FOLLOWUP_SPEECH_FRAMES:
-                    logger.info("[state] barge-in (parole) — coupure")
-                    self.player.stop()
-                    return True
-            else:
-                loud = 0
+            # Barge-in par la VOIX DE L'UTILISATEUR (pas YouTube ni la voix d'Aura).
+            if gated:
+                win = np.concatenate([win, frame])[-win_max:]
+                hop += FRAME_S
+                if hop >= config.TARGET_HOP_S:
+                    hop = 0.0
+                    if self._user_in_window(win):
+                        streak += 1
+                        if streak >= 2:
+                            logger.info("[state] barge-in (ta voix) — coupure")
+                            self.player.stop()
+                            return True
+                    else:
+                        streak = 0
         t.join(timeout=0.5)
         return False
 
@@ -191,22 +213,30 @@ class Orchestrator:
         logger.info("[state] CONVERSING — répondez (ou « Dis Aura »), %.0fs", config.CONVERSATION_WINDOW_S)
         self.ambient.set_enabled(False)
         deadline = time.time() + config.CONVERSATION_WINDOW_S
-        # Follow-up sans wake word UNIQUEMENT si la voix est enrôlée
-        # (sinon le bruit/YouTube re-déclencherait en boucle).
-        allow_followup = self.target.has_reference
-        speech = 0
+        # Follow-up sans wake word UNIQUEMENT si la VOIX de l'utilisateur est
+        # détectée (locuteur cible). Sinon → seul « Dis Aura » ré-engage.
+        gated = self.target.has_reference
+        win = np.zeros(0, dtype=np.int16)
+        win_max = int(1.0 * config.SAMPLE_RATE)
+        hop = 0.0
+        streak = 0
         for frame in frames:
             if time.time() >= deadline:
                 return "IDLE", False
             ev = self.wake.process(frame)
             if ev in ("activate", "interrupt"):
                 return "LISTENING", False        # wake word explicite (toujours)
-            if allow_followup and _rms(frame) >= config.CONVERSING_RMS:
-                speech += 1
-                if speech >= config.FOLLOWUP_SPEECH_FRAMES:
-                    return "LISTENING", True      # follow-up gated en LISTENING (locuteur cible)
-            else:
-                speech = 0
+            if gated:
+                win = np.concatenate([win, frame])[-win_max:]
+                hop += FRAME_S
+                if hop >= config.TARGET_HOP_S:
+                    hop = 0.0
+                    if self._user_in_window(win):
+                        streak += 1
+                        if streak >= 2:
+                            return "LISTENING", True   # follow-up : ta voix détectée
+                    else:
+                        streak = 0
         return "IDLE", False
 
     # ── Boucle principale ────────────────────────────────────────────
