@@ -1,8 +1,8 @@
-"""Client cloud du device : envoie l'audio commande, reçoit le MP3 TTS.
+"""Client cloud du device.
 
-Le device ne détient aucune clé tierce : il s'authentifie au cloud avec
-son DEVICE_TOKEN + le JWT de l'utilisateur appairé, et le cloud fait
-STT + LLM + TTS.
+Le device ne détient aucune clé tierce : il envoie l'audio au cloud, qui fait
+STT + intent + speaker verification + LLM + TTS, et renvoie soit l'audio MP3,
+soit un statut (rejeté / pas pour Aura).
 """
 
 import io
@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 
 def pcm_to_wav_bytes(pcm: np.ndarray, sample_rate: int = config.SAMPLE_RATE) -> bytes:
-    """int16 mono -> conteneur WAV."""
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
@@ -38,20 +37,49 @@ def _headers() -> dict:
     return h
 
 
-def converse(command_pcm: np.ndarray) -> tuple[bytes, str, str]:
-    """Envoie l'audio commande au cloud. Retourne (mp3, transcript, réponse).
+def _url(path: str) -> str:
+    return config.CLOUD_BACKEND_URL.rstrip("/") + path
 
-    Lève httpx.HTTPStatusError en cas d'erreur (ex: 422 si transcription vide).
+
+def converse(command_pcm: np.ndarray, from_conversing: bool, context: list[str]) -> dict:
+    """Envoie la commande au cloud (pipeline gated complet).
+
+    Retourne :
+      {"kind": "audio", "mp3": bytes, "transcript": str, "response": str, "speaker": str}
+      {"kind": "status", "status": "empty"|"not_directed"|"rejected"|..., "transcript": str, ...}
     """
+    import json
     wav = pcm_to_wav_bytes(command_pcm)
-    url = config.CLOUD_BACKEND_URL.rstrip("/") + "/api/device/converse"
     with httpx.Client(timeout=httpx.Timeout(60.0)) as client:
         resp = client.post(
-            url,
+            _url("/api/device/converse"),
             headers=_headers(),
+            data={"from_conversing": "true" if from_conversing else "false",
+                  "context": json.dumps(context)},
             files={"audio": ("command.wav", wav, "audio/wav")},
         )
         resp.raise_for_status()
-        transcript = unquote(resp.headers.get("X-Transcript", ""))
-        response_text = unquote(resp.headers.get("X-Response", ""))
-        return resp.content, transcript, response_text
+        ctype = resp.headers.get("content-type", "")
+        if ctype.startswith("audio/"):
+            return {
+                "kind": "audio",
+                "mp3": resp.content,
+                "transcript": unquote(resp.headers.get("X-Transcript", "")),
+                "response": unquote(resp.headers.get("X-Response", "")),
+                "speaker": unquote(resp.headers.get("X-Speaker", "")),
+            }
+        data = resp.json()
+        return {"kind": "status", **data}
+
+
+def transcribe(pcm: np.ndarray) -> str:
+    """Transcription simple (contexte ambiant). Retourne le texte (ou '')."""
+    wav = pcm_to_wav_bytes(pcm)
+    with httpx.Client(timeout=httpx.Timeout(40.0)) as client:
+        resp = client.post(
+            _url("/api/device/transcribe"),
+            headers=_headers(),
+            files={"audio": ("ambient.wav", wav, "audio/wav")},
+        )
+        resp.raise_for_status()
+        return (resp.json().get("text") or "").strip()

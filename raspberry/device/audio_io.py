@@ -83,6 +83,17 @@ class MicStream:
             yield frame
 
 
+def play_beep(freq: float = 880.0, dur: float = 0.15, gain: float = 0.25):
+    """Petit bip de confirmation d'écoute (best-effort, ignoré si erreur)."""
+    try:
+        sr = 16000
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+        tone = (np.sin(2 * np.pi * freq * t) * gain * 32767).astype(np.int16)
+        sd.play(tone, sr, blocking=False)
+    except Exception:
+        pass
+
+
 class Player:
     """Lecture d'un flux MP3 via mpg123, interruptible."""
 

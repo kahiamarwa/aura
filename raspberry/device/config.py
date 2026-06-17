@@ -34,8 +34,29 @@ WAKE_THRESHOLDS = {
 }
 WAKE_COOLDOWN_S = 1.5
 
-# ── Capture de la commande (VAD énergie simple) ──────────────────────
-CMD_SILENCE_RMS = float(os.getenv("CMD_SILENCE_RMS", "300"))   # seuil silence (int16)
+# ── Silero VAD (détection de parole robuste, modèle ONNX) ────────────
+# silero_vad.onnx est téléchargé par openwakeword (download_models()).
+SILERO_VAD_PATH = Path(os.getenv("SILERO_VAD_PATH", OPENWAKE_DIR.parent / "device" / "silero_vad.onnx"))
+VAD_FRAME_SIZE = 512            # 32 ms à 16 kHz (taille de frame Silero)
+VAD_PROB_THRESHOLD = 0.5       # proba de parole au-dessus = parole
+VAD_SPEECH_FRAMES = 2          # frames consécutives pour démarrer (~hystérésis)
+VAD_SILENCE_FRAMES = 20        # frames de silence pour clore (~0.6s à 32ms/frame)
+
+# ── Capture de la commande ───────────────────────────────────────────
+CMD_SILENCE_RMS = float(os.getenv("CMD_SILENCE_RMS", "300"))   # fallback énergie si pas de VAD
 CMD_SILENCE_HANG_S = 1.0      # silence consécutif pour clore la commande
 CMD_MAX_S = 12.0              # durée max d'une commande
 CMD_MIN_SPEECH_S = 0.3        # parole min pour considérer une vraie commande
+
+# ── Conversation continue (parité web) ───────────────────────────────
+CONVERSATION_WINDOW_S = 12.0   # fenêtre pour répondre sans wake word (conversing)
+CONVERSING_RMS = float(os.getenv("CONVERSING_RMS", "350"))   # seuil parole en conversing
+SPEAKING_RMS = float(os.getenv("SPEAKING_RMS", "600"))       # seuil barge-in pendant TTS (> écho)
+FOLLOWUP_SPEECH_FRAMES = 3     # frames consécutives pour déclencher un follow-up/barge-in
+
+# ── Contexte ambiant (STT passif) ────────────────────────────────────
+AMBIENT_ENABLED = os.getenv("AMBIENT_ENABLED", "1") == "1"
+AMBIENT_BATCH_S = 15.0         # envoi d'un batch ambiant toutes les 15 s
+AMBIENT_PREFIX = "[Conversation ambiante]: "
+MAX_CONTEXT_SEGMENTS = 50      # taille max du buffer de contexte
+MAX_CONTEXT_AGE_S = 30 * 60    # 30 min
