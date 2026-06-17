@@ -56,6 +56,14 @@ TARGET_HANG_S = float(os.getenv("TARGET_HANG_S", "2.0"))   # absence de TA voix 
 TARGET_MISS_HYSTERESIS = 2    # fenêtres "pas lui" consécutives avant de compter l'absence
 TARGET_WAIT_START_S = 4.0     # si TA voix n'apparaît jamais après le wake word → abandon
 
+# ── Endpointing SÉMANTIQUE (tolère les pauses de réflexion) ──────────
+# À chaque pause, le cloud vérifie si la phrase est finie (Haiku). Si tu
+# réfléchissais (phrase incomplète), on garde l'écoute ouverte.
+SEMANTIC_ENDPOINTING = os.getenv("SEMANTIC_ENDPOINTING", "1") == "1"
+SEMANTIC_MAX_CHECKS = 3        # nb max de vérifications de complétude par commande
+SEMANTIC_MAX_S = 15.0          # au-delà → on traite (cap de sécurité)
+TARGET_WAIT_CONTINUE_S = 3.0   # délai d'attente de la suite après une pause de réflexion
+
 # ── Conversation continue (parité web) ───────────────────────────────
 CONVERSATION_WINDOW_S = 12.0   # fenêtre pour répondre sans wake word (conversing)
 CONVERSING_RMS = float(os.getenv("CONVERSING_RMS", "350"))   # seuil parole en conversing

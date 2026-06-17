@@ -1,0 +1,248 @@
+"""Pipeline conversationnel complet pour les enceintes headless.
+
+Le device envoie l'audio de la commande + le flag `from_conversing` + le
+contexte ambiant. Le cloud fait TOUT le gating (le device n'a aucune clé) :
+
+  STT (Mistral)
+   → [si from_conversing] intent Haiku : la phrase est-elle pour Aura ?
+   → speaker verification : est-ce un utilisateur enrôlé ?
+   → agent LLM (avec contexte ambiant)
+   → TTS (ElevenLabs)
+
+Réponse :
+  - succès  → flux MP3 (+ headers X-Transcript, X-Response, X-Status: ok)
+  - gated   → JSON 200 {status: empty|not_directed|rejected, ...} (pas d'audio)
+
+Auth : X-Device-Token (si configuré) + Authorization: Bearer <JWT user>.
+"""
+
+import json
+import logging
+from urllib.parse import quote
+
+import httpx
+
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, JSONResponse
+
+from app.config import get_settings
+from app.routes.gemini_stt import transcribe_audio, pcm_to_wav
+from app.routes.intent_classifier import classify_intent
+from app.services import llm_service
+from app.services.tts_service import stream_tts
+from app.services.speaker_service import SpeakerService
+from app.services.supabase_client import get_supabase_client, get_user_id
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+VERIFY_THRESHOLD = 0.40
+
+_COMPLETE_SYS = (
+    "Tu reçois une transcription partielle d'une commande vocale en français. "
+    "Dis si la personne a FINI sa phrase, ou si elle s'est arrêtée au milieu "
+    "(hésitation, pause de réflexion : « euh », phrase coupée, etc.). "
+    "Réponds UNIQUEMENT par un mot : COMPLET ou INCOMPLET."
+)
+
+
+async def _is_complete(text: str) -> bool:
+    """Haiku ultra-court : la phrase est-elle terminée ? Fail-open = complet."""
+    settings = get_settings()
+    if len(text.split()) < 2:
+        return False  # trop court → sûrement une pause
+    if not settings.ANTHROPIC_API_KEY:
+        return True
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            r = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": settings.ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 5,
+                    "system": _COMPLETE_SYS,
+                    "messages": [{"role": "user", "content": text}],
+                },
+            )
+        if r.status_code != 200:
+            return True
+        reply = r.json()["content"][0]["text"].strip().upper()
+        return "INCOMPLET" not in reply
+    except Exception:
+        return True  # ne jamais bloquer l'utilisateur
+
+
+def _check_device(request: Request) -> str | None:
+    settings = get_settings()
+    if settings.DEVICE_TOKEN:
+        if request.headers.get("x-device-token", "") != settings.DEVICE_TOKEN:
+            raise HTTPException(status_code=403, detail="Invalid device token")
+    auth = request.headers.get("authorization", "")
+    return auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else None
+
+
+def _verify_speaker(user_token: str | None, wav_data: bytes) -> dict:
+    """Vérifie le locuteur contre les voix enrôlées. Fail-open si pas de token/enrollment."""
+    if not user_token:
+        return {"verified": True, "reason": "no_token"}
+    try:
+        supabase = get_supabase_client(user_token)
+        user_id = get_user_id(supabase, user_token)
+        enr = supabase.table("speaker_enrollments").select("*").eq("user_id", user_id).execute()
+        if not enr.data:
+            return {"verified": True, "reason": "no_enrollments"}
+
+        service = SpeakerService.get_instance()
+        audio = service._wav_bytes_to_float32(wav_data)
+        speakers = [
+            {"name": e["speaker_name"], "embedding": service.embedding_from_base64(e["embedding"])}
+            for e in enr.data
+        ]
+        name, score, accepted = service.verify_multi(audio, speakers)
+        return {"verified": accepted, "speaker_name": name, "score": round(float(score), 4)}
+    except Exception as e:
+        logger.warning("[converse] verify error (fail-open): %s", e)
+        return {"verified": True, "reason": "error"}
+
+
+@router.post("/api/device/converse")
+async def converse(
+    raw_request: Request,
+    audio: UploadFile = File(...),
+    from_conversing: str = Form("false"),
+    context: str = Form("[]"),
+    tentative: str = Form("false"),
+):
+    settings = get_settings()
+    user_token = _check_device(raw_request)
+    from_conv = from_conversing.lower() in ("1", "true", "yes")
+    is_tentative = tentative.lower() in ("1", "true", "yes")
+    try:
+        ambient_context = json.loads(context) if context else []
+        if not isinstance(ambient_context, list):
+            ambient_context = []
+    except Exception:
+        ambient_context = []
+
+    if not settings.MISTRAL_API_KEY:
+        raise HTTPException(status_code=500, detail="MISTRAL_API_KEY not configured")
+    if not settings.AURA_AGENT_URL or not settings.AURA_AGENT_TOKEN:
+        raise HTTPException(status_code=500, detail="AURA agent not configured")
+    if not settings.ELEVENLABS_API_KEY or not settings.ELEVENLABS_VOICE_ID:
+        raise HTTPException(status_code=500, detail="TTS not configured")
+
+    raw = await audio.read()
+    if len(raw) < 1000:
+        raise HTTPException(status_code=400, detail="Audio too small")
+    wav_data = raw if raw[:4] == b"RIFF" else pcm_to_wav(raw, sample_rate=16000)
+
+    # ── 1. STT ──────────────────────────────────────────────────────
+    transcript = (await transcribe_audio(settings.MISTRAL_API_KEY, wav_data) or "").strip()
+    logger.info("[converse] transcript=%r from_conv=%s", transcript[:80], from_conv)
+    if not transcript:
+        return JSONResponse({"status": "empty"})
+
+    # ── 1bis. Complétude (endpointing sémantique) ───────────────────
+    # Si le device est en mode "tentative" (il a détecté une pause mais n'est
+    # pas sûr que la phrase soit finie), on vérifie : pause de réflexion ou fin ?
+    if is_tentative and not await _is_complete(transcript):
+        logger.info("[converse] phrase incomplète → continue d'écouter: %r", transcript[:60])
+        return JSONResponse({"status": "incomplete", "transcript": transcript})
+
+    # ── 2. Intent (seulement depuis conversing) ─────────────────────
+    if from_conv:
+        intent = await classify_intent(transcript, ambient_context)
+        if not intent.get("directed", True):
+            logger.info("[converse] not directed at Aura → skip")
+            return JSONResponse({"status": "not_directed", "transcript": transcript})
+
+    # ── 3. Speaker verification ─────────────────────────────────────
+    verify = _verify_speaker(user_token, wav_data)
+    if not verify.get("verified", True) and verify.get("reason") != "no_enrollments":
+        logger.info("[converse] speaker rejected: %s", verify)
+        return JSONResponse({
+            "status": "rejected",
+            "transcript": transcript,
+            "speaker_name": verify.get("speaker_name"),
+            "score": verify.get("score"),
+        })
+
+    # ── 4. Agent LLM (avec contexte ambiant) ────────────────────────
+    enriched = "\n".join(ambient_context) if ambient_context else None
+    result = await llm_service.get_response(
+        command=transcript,
+        context=[],
+        agent_url=settings.AURA_AGENT_URL,
+        agent_token=settings.AURA_AGENT_TOKEN,
+        user_token=user_token,
+        enriched_context=enriched,
+    )
+    response_text = (result.get("text") or "").strip()
+    logger.info("[converse] response=%r", response_text[:80])
+    if not response_text:
+        return JSONResponse({"status": "empty_response", "transcript": transcript})
+
+    # ── 5. TTS → MP3 ────────────────────────────────────────────────
+    headers = {
+        "X-Status": "ok",
+        "X-Transcript": quote(transcript),
+        "X-Response": quote(response_text),
+        "X-Speaker": quote(verify.get("speaker_name") or ""),
+        "Access-Control-Expose-Headers": "X-Status, X-Transcript, X-Response, X-Speaker",
+    }
+    return StreamingResponse(
+        stream_tts(text=response_text, voice_id=settings.ELEVENLABS_VOICE_ID, api_key=settings.ELEVENLABS_API_KEY),
+        media_type="audio/mpeg",
+        headers=headers,
+    )
+
+
+@router.post("/api/device/transcribe")
+async def transcribe(raw_request: Request, audio: UploadFile = File(...)):
+    """Transcription simple pour le contexte ambiant (batch passif du device)."""
+    _check_device(raw_request)
+    settings = get_settings()
+    if not settings.MISTRAL_API_KEY:
+        raise HTTPException(status_code=500, detail="MISTRAL_API_KEY not configured")
+    raw = await audio.read()
+    if len(raw) < 1000:
+        return {"text": ""}
+    wav_data = raw if raw[:4] == b"RIFF" else pcm_to_wav(raw, sample_rate=16000)
+    text = (await transcribe_audio(settings.MISTRAL_API_KEY, wav_data) or "").strip()
+    return {"text": text}
+
+
+@router.get("/api/device/speakers/embeddings")
+async def device_speaker_embeddings(raw_request: Request):
+    """Renvoie les empreintes vocales enrôlées de l'utilisateur (base64).
+
+    Le device les met en cache pour faire l'endpointing par locuteur cible
+    EN LOCAL (décider en temps réel si c'est bien l'utilisateur qui parle),
+    sans round-trip réseau pendant la prise de commande.
+    """
+    user_token = _check_device(raw_request)
+    if not user_token:
+        return {"embeddings": []}
+    try:
+        supabase = get_supabase_client(user_token)
+        user_id = get_user_id(supabase, user_token)
+        enr = (
+            supabase.table("speaker_enrollments")
+            .select("speaker_name, embedding")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return {
+            "embeddings": [
+                {"name": e["speaker_name"], "embedding_b64": e["embedding"]}
+                for e in (enr.data or [])
+            ]
+        }
+    except Exception as e:
+        logger.warning("[device] embeddings fetch error: %s", e)
+        return {"embeddings": []}

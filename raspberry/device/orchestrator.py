@@ -49,19 +49,24 @@ class Orchestrator:
         self.state = "IDLE"
 
     # ── LISTENING : enregistrement avec endpointing par locuteur cible ─
-    def _record_command(self, frames) -> np.ndarray | None:
+    def _record_command(self, frames, continuation: bool = False) -> np.ndarray | None:
         """Enregistre la commande et s'arrête quand l'UTILISATEUR a fini.
 
         Robuste en milieu bruyant : si la voix de l'utilisateur est enrôlée,
         on endpointe sur SA voix (ECAPA local) en ignorant les autres voix.
         Sinon, repli sur énergie/VAD. Cap de sécurité absolu dans tous les cas.
+
+        continuation=True : on reprend après une pause de réflexion (pas de bip,
+        attente plus courte de la suite).
         """
-        play_beep()
         sr = config.SAMPLE_RATE
         use_target = self.target.has_reference
-        mode = "locuteur cible" if use_target else "énergie/VAD"
-        logger.info("[state] LISTENING (%s) — parlez…", mode)
-        self.ambient.set_enabled(False)
+        wait_max = config.TARGET_WAIT_CONTINUE_S if continuation else config.TARGET_WAIT_START_S
+        if not continuation:
+            play_beep()
+            mode = "locuteur cible" if use_target else "énergie/VAD"
+            logger.info("[state] LISTENING (%s) — parlez…", mode)
+            self.ambient.set_enabled(False)
 
         chunks: list[np.ndarray] = []
         win = np.zeros(0, dtype=np.int16)
@@ -111,8 +116,9 @@ class Orchestrator:
                     break                               # l'utilisateur a fini
             else:
                 wait_s += config.TARGET_HOP_S
-                if wait_s >= config.TARGET_WAIT_START_S:
-                    logger.info("[endpoint] voix utilisateur jamais détectée → abandon")
+                if wait_s >= wait_max:
+                    if not continuation:
+                        logger.info("[endpoint] voix utilisateur jamais détectée → abandon")
                     return None
 
         if not started:
@@ -138,15 +144,41 @@ class Orchestrator:
     # ── THINKING : cloud (gated) → audio ou statut ───────────────────
     def _handle_command(self, pcm: np.ndarray, from_conversing: bool, frames) -> tuple[str, bool]:
         self._spoke = False
-        logger.info("[state] THINKING — envoi au cloud (from_conversing=%s)…", from_conversing)
-        try:
-            res = cloud.converse(pcm, from_conversing, self.ambient.get_context())
-        except httpx.HTTPStatusError as e:
-            logger.error("[cloud] %s: %s", e.response.status_code, e.response.text[:200])
-            return "CONVERSING", False
-        except Exception as e:
-            logger.error("[cloud] injoignable: %s", e)
-            return "CONVERSING", False
+        sr = config.SAMPLE_RATE
+        full = pcm
+        checks = 0
+        ctx = self.ambient.get_context()
+        # ── Boucle d'endpointing sémantique : tolère les pauses de réflexion ──
+        while True:
+            tentative = (
+                config.SEMANTIC_ENDPOINTING
+                and checks < config.SEMANTIC_MAX_CHECKS
+                and len(full) < config.SEMANTIC_MAX_S * sr
+            )
+            logger.info("[state] THINKING — envoi au cloud (from_conversing=%s, tentative=%s)…",
+                        from_conversing, tentative)
+            try:
+                res = cloud.converse(full, from_conversing, ctx, tentative=tentative)
+            except httpx.HTTPStatusError as e:
+                logger.error("[cloud] %s: %s", e.response.status_code, e.response.text[:200])
+                return "CONVERSING", False
+            except Exception as e:
+                logger.error("[cloud] injoignable: %s", e)
+                return "CONVERSING", False
+
+            if res.get("kind") == "status" and res.get("status") == "incomplete":
+                checks += 1
+                logger.info("[endpoint] pause de réflexion (« %s… ») — on continue d'écouter",
+                            (res.get("transcript") or "")[:50])
+                more = self._record_command(frames, continuation=True)
+                if more is None:
+                    # L'utilisateur a vraiment fini → on force le traitement
+                    logger.info("[endpoint] plus de parole → traitement de la commande")
+                    res = cloud.converse(full, from_conversing, ctx, tentative=False)
+                    break
+                full = np.concatenate([full, more])
+                continue
+            break
 
         if res["kind"] == "status":
             st = res.get("status")

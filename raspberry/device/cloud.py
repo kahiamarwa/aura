@@ -41,12 +41,17 @@ def _url(path: str) -> str:
     return config.CLOUD_BACKEND_URL.rstrip("/") + path
 
 
-def converse(command_pcm: np.ndarray, from_conversing: bool, context: list[str]) -> dict:
+def converse(command_pcm: np.ndarray, from_conversing: bool, context: list[str],
+             tentative: bool = False) -> dict:
     """Envoie la commande au cloud (pipeline gated complet).
+
+    tentative=True : le device a détecté une pause mais n'est pas sûr que la
+    phrase soit finie → le cloud peut répondre {status: incomplete} pour qu'on
+    continue d'écouter (endpointing sémantique).
 
     Retourne :
       {"kind": "audio", "mp3": bytes, "transcript": str, "response": str, "speaker": str}
-      {"kind": "status", "status": "empty"|"not_directed"|"rejected"|..., "transcript": str, ...}
+      {"kind": "status", "status": "empty"|"not_directed"|"rejected"|"incomplete"|..., ...}
     """
     import json
     wav = pcm_to_wav_bytes(command_pcm)
@@ -55,7 +60,8 @@ def converse(command_pcm: np.ndarray, from_conversing: bool, context: list[str])
             _url("/api/device/converse"),
             headers=_headers(),
             data={"from_conversing": "true" if from_conversing else "false",
-                  "context": json.dumps(context)},
+                  "context": json.dumps(context),
+                  "tentative": "true" if tentative else "false"},
             files={"audio": ("command.wav", wav, "audio/wav")},
         )
         resp.raise_for_status()
