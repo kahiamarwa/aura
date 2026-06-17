@@ -108,23 +108,27 @@ class Orchestrator:
                 present = win_rms >= config.CMD_SILENCE_RMS
 
             if present:
+                if not started:
+                    logger.info("[endpoint] ta voix détectée (rms=%.0f) — j'enregistre", win_rms)
                 started = True
                 absent_s = 0.0
             elif started:
                 absent_s += config.TARGET_HOP_S
                 if absent_s >= config.TARGET_HANG_S:
+                    logger.info("[endpoint] fin (%.1fs de parole, hang %.1fs)", total_s, absent_s)
                     break                               # l'utilisateur a fini
             else:
                 wait_s += config.TARGET_HOP_S
                 if wait_s >= wait_max:
                     if not continuation:
-                        logger.info("[endpoint] voix utilisateur jamais détectée → abandon")
+                        logger.info("[endpoint] voix utilisateur jamais détectée (rms_max=%.0f) → abandon", _rms(win))
                     return None
 
         if not started:
             return None
         pcm = np.concatenate(chunks)
         if len(pcm) < config.CMD_MIN_SPEECH_S * sr:
+            logger.info("[endpoint] commande trop courte (%.1fs) → ignorée", len(pcm) / sr)
             return None
         return pcm
 

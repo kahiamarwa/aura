@@ -84,19 +84,35 @@ class MicStream:
             yield frame
 
 
-def play_beep(freq: float = 880.0, dur: float = 0.15, gain: float = 0.25):
-    """Bip de confirmation d'écoute. Désactivé par défaut (AURA_BEEP=1 pour activer).
+_BEEP_WAV = "/tmp/aura_beep.wav"
+_beep_ready = False
 
-    Beaucoup de cartes (ex: micro USB entrée seule) n'ont pas de sortie
-    sounddevice utilisable → on évite le bruit ALSA. Le TTS passe par mpg123.
+
+def play_beep(freq: float = 880.0, dur: float = 0.18, gain: float = 0.3):
+    """Bip « je t'écoute » joué sur le HAUT-PARLEUR (aplay, comme le TTS).
+
+    On évite sounddevice (souvent pas de sortie sur les micros USB) : on passe
+    par aplay/ALSA, le même chemin que mpg123 pour le TTS. Désactivable AURA_BEEP=0.
     """
-    if os.getenv("AURA_BEEP", "0") != "1":
+    if os.getenv("AURA_BEEP", "1") != "1":
         return
+    global _beep_ready
     try:
-        sr = 16000
-        t = np.linspace(0, dur, int(sr * dur), endpoint=False)
-        tone = (np.sin(2 * np.pi * freq * t) * gain * 32767).astype(np.int16)
-        sd.play(tone, sr, blocking=False)
+        if not _beep_ready:
+            import wave as _wave
+            sr = 16000
+            n = int(sr * dur)
+            t = np.linspace(0, dur, n, endpoint=False)
+            env = np.minimum(1.0, np.minimum(t, dur - t) * 40)  # fade in/out
+            tone = (np.sin(2 * np.pi * freq * t) * env * gain * 32767).astype(np.int16)
+            with _wave.open(_BEEP_WAV, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sr)
+                wf.writeframes(tone.tobytes())
+            _beep_ready = True
+        subprocess.Popen(["aplay", "-q", _BEEP_WAV],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
