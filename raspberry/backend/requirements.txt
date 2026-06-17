@@ -6,9 +6,9 @@ python-dotenv==1.0.1
 httpx==0.28.1
 openwakeword==0.6.0
 numpy>=1.21.6
-supabase==2.13.0
-anthropic==0.52.0
-websockets>=12.0
-wsproto>=1.2.0
 onnxruntime>=1.17.0
 python-multipart>=0.0.6
+websockets>=12.0
+wsproto>=1.2.0
+# NOTE: supabase & anthropic retirés — le device ne parle qu'au backend cloud.
+# Aucune clé tierce ni accès base de données depuis le Raspberry Pi.
