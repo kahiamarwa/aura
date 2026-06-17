@@ -45,8 +45,16 @@ VAD_SILENCE_FRAMES = 20        # frames de silence pour clore (~0.6s à 32ms/fra
 # ── Capture de la commande ───────────────────────────────────────────
 CMD_SILENCE_RMS = float(os.getenv("CMD_SILENCE_RMS", "300"))   # fallback énergie si pas de VAD
 CMD_SILENCE_HANG_S = 1.0      # silence consécutif pour clore la commande
-CMD_MAX_S = 12.0              # durée max d'une commande
+CMD_MAX_S = 12.0              # durée max d'une commande (cap de sécurité absolu)
 CMD_MIN_SPEECH_S = 0.3        # parole min pour considérer une vraie commande
+
+# ── Endpointing par LOCUTEUR CIBLE (robuste en milieu bruyant) ───────
+# L'enceinte s'arrête quand TA voix s'arrête, en ignorant les autres voix.
+TARGET_WINDOW_S = 1.5          # fenêtre glissante pour décider "c'est lui ?"
+TARGET_HOP_S = 0.4            # cadence de décision (toutes les 0.4 s)
+TARGET_HANG_S = 1.2           # absence consécutive de TA voix pour clore
+TARGET_MISS_HYSTERESIS = 2    # fenêtres "pas lui" consécutives avant de compter l'absence
+TARGET_WAIT_START_S = 4.0     # si TA voix n'apparaît jamais après le wake word → abandon
 
 # ── Conversation continue (parité web) ───────────────────────────────
 CONVERSATION_WINDOW_S = 12.0   # fenêtre pour répondre sans wake word (conversing)

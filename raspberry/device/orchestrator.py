@@ -24,6 +24,7 @@ import numpy as np
 from . import config
 from .wakeword import WakeWord
 from .vad import VAD
+from .speaker import TargetSpeaker
 from .audio_io import MicStream, Player, play_beep
 from .context import AmbientContext
 from . import cloud
@@ -42,33 +43,82 @@ class Orchestrator:
     def __init__(self):
         self.wake = WakeWord()
         self.vad = VAD()
+        self.target = TargetSpeaker()
         self.player = Player()
         self.ambient = AmbientContext()
         self.state = "IDLE"
 
-    # ── LISTENING : enregistre la commande via VAD ───────────────────
+    # ── LISTENING : enregistrement avec endpointing par locuteur cible ─
     def _record_command(self, frames) -> np.ndarray | None:
+        """Enregistre la commande et s'arrête quand l'UTILISATEUR a fini.
+
+        Robuste en milieu bruyant : si la voix de l'utilisateur est enrôlée,
+        on endpointe sur SA voix (ECAPA local) en ignorant les autres voix.
+        Sinon, repli sur énergie/VAD. Cap de sécurité absolu dans tous les cas.
+        """
         play_beep()
-        logger.info("[state] LISTENING — parlez…")
+        sr = config.SAMPLE_RATE
+        use_target = self.target.has_reference
+        mode = "locuteur cible" if use_target else "énergie/VAD"
+        logger.info("[state] LISTENING (%s) — parlez…", mode)
         self.ambient.set_enabled(False)
-        self.vad.reset()
-        chunks, speech, silence_s, total_s = [], False, 0.0, 0.0
+
+        chunks: list[np.ndarray] = []
+        win = np.zeros(0, dtype=np.int16)
+        win_max = int(config.TARGET_WINDOW_S * sr)
+        min_win = int(0.5 * sr)
+        hop = 0.0
+        total_s = 0.0
+        started = False
+        absent_s = 0.0
+        wait_s = 0.0
+
         for frame in frames:
             chunks.append(frame)
             total_s += FRAME_S
-            if self.vad.is_speech(frame):
-                speech, silence_s = True, 0.0
-            elif speech:
-                silence_s += FRAME_S
-            if speech and silence_s >= config.CMD_SILENCE_HANG_S:
-                break
+            win = np.concatenate([win, frame])[-win_max:]
+            hop += FRAME_S
+
+            # Cap de sécurité absolu — coupe toujours
             if total_s >= config.CMD_MAX_S:
+                logger.info("[endpoint] cap max %.0fs atteint", config.CMD_MAX_S)
                 break
-        if not speech:
-            logger.info("[state] aucune parole → retour")
+
+            # Décision seulement à la cadence du hop (réduit le calcul)
+            if hop < config.TARGET_HOP_S:
+                continue
+            hop = 0.0
+
+            win_rms = _rms(win)
+            if win_rms < config.CMD_SILENCE_RMS * 0.5:
+                present = False                         # clairement silence
+            elif use_target and len(win) >= min_win:
+                is_user, score = self.target.is_target(win)
+                if is_user is None:                     # modèle indispo → repli
+                    use_target = False
+                    present = win_rms >= config.CMD_SILENCE_RMS
+                else:
+                    present = is_user
+            else:
+                present = win_rms >= config.CMD_SILENCE_RMS
+
+            if present:
+                started = True
+                absent_s = 0.0
+            elif started:
+                absent_s += config.TARGET_HOP_S
+                if absent_s >= config.TARGET_HANG_S:
+                    break                               # l'utilisateur a fini
+            else:
+                wait_s += config.TARGET_HOP_S
+                if wait_s >= config.TARGET_WAIT_START_S:
+                    logger.info("[endpoint] voix utilisateur jamais détectée → abandon")
+                    return None
+
+        if not started:
             return None
         pcm = np.concatenate(chunks)
-        if len(pcm) < config.CMD_MIN_SPEECH_S * config.SAMPLE_RATE:
+        if len(pcm) < config.CMD_MIN_SPEECH_S * sr:
             return None
         return pcm
 
@@ -158,6 +208,7 @@ class Orchestrator:
 
     # ── Boucle principale ────────────────────────────────────────────
     def run(self):
+        self.target.load_references()   # cache l'empreinte vocale (endpointing local)
         self.ambient.start()
         logger.info("Aura prêt. Dites « Dis Aura ».")
         with MicStream() as mic:

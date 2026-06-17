@@ -83,3 +83,22 @@ def transcribe(pcm: np.ndarray) -> str:
         )
         resp.raise_for_status()
         return (resp.json().get("text") or "").strip()
+
+
+def fetch_user_embeddings() -> list:
+    """Récupère les empreintes vocales enrôlées (pour l'endpointing local).
+
+    Retourne une liste de np.ndarray (192-dim, L2-normalisés).
+    """
+    import io
+    import base64
+    with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        resp = client.get(_url("/api/device/speakers/embeddings"), headers=_headers())
+        resp.raise_for_status()
+        out = []
+        for e in resp.json().get("embeddings", []):
+            buf = io.BytesIO(base64.b64decode(e["embedding_b64"]))
+            emb = np.load(buf).astype(np.float32)
+            n = np.linalg.norm(emb)
+            out.append(emb / n if n > 0 else emb)
+        return out
