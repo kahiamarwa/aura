@@ -24,10 +24,10 @@ class Settings(BaseSettings):
     # Si défini, les routes /api/device/* l'exigent. Production : table devices.
     DEVICE_TOKEN: str = ""
 
-    # Rejeter une commande si le locuteur n'est pas l'utilisateur enrôlé ?
-    # OFF par défaut : ECAPA trop instable (rejette le vrai utilisateur). On
-    # répond à tout le monde et on mise sur le bruit. VERIFY_SPEAKER_ENFORCE=1 pour bloquer.
-    VERIFY_SPEAKER_ENFORCE: bool = False
+    # Rejeter une commande si le locuteur n'est pas l'utilisateur enrôlé (sécurité) ?
+    # ON : fiable sur une commande medium/longue (assez d'audio). Seul le wake word
+    # (audio court) était instable et reste non gardé. VERIFY_SPEAKER_ENFORCE=0 pour ouvrir à tous.
+    VERIFY_SPEAKER_ENFORCE: bool = True
 
     class Config:
         env_file = ".env"

@@ -67,10 +67,10 @@ CMD_MAX_S = 12.0              # durée max d'une commande (cap de sécurité abs
 CMD_MIN_SPEECH_S = 0.3        # parole min pour considérer une vraie commande
 
 # ── Endpointing par LOCUTEUR CIBLE (robuste en milieu bruyant) ───────
-# OFF par défaut : ECAPA sur fenêtres courtes est trop instable (rate le vrai
-# utilisateur). On endpointe sur l'énergie/VAD (fiable) + traitement du bruit.
-# TARGET_ENDPOINTING=1 pour réactiver le suivi par locuteur.
-TARGET_ENDPOINTING = os.getenv("TARGET_ENDPOINTING", "0") == "1"
+# ON : marche bien sur une commande medium/longue (assez d'audio pour identifier
+# l'utilisateur). Seul le wake word (audio court 1,5s) était instable → lui seul
+# est désactivé (WAKE_SPEAKER_GATE). TARGET_ENDPOINTING=0 pour repasser énergie/VAD.
+TARGET_ENDPOINTING = os.getenv("TARGET_ENDPOINTING", "1") == "1"
 # L'enceinte s'arrête quand TA voix s'arrête, en ignorant les autres voix.
 TARGET_WINDOW_S = 1.5          # fenêtre glissante pour décider "c'est lui ?"
 TARGET_HOP_S = 0.4            # cadence de décision (toutes les 0.4 s)
