@@ -194,10 +194,12 @@ async def converse(
         return JSONResponse({"status": "incomplete", "transcript": transcript})
 
     # ── 2. Intent (seulement depuis conversing) ─────────────────────
+    # On ne REJETTE que si Haiku est CONFIANT que ce n'est pas pour Aura.
+    # Dans le doute → on répond (mieux vaut répondre que d'ignorer une vraie demande).
     if from_conv:
         intent = await classify_intent(transcript, ambient_context)
-        if not intent.get("directed", True):
-            logger.info("[converse] not directed at Aura → skip")
+        if not intent.get("directed", True) and intent.get("confidence", 0.0) >= 0.75:
+            logger.info("[converse] not directed at Aura (conf=%.2f) → skip", intent.get("confidence", 0.0))
             return JSONResponse({"status": "not_directed", "transcript": transcript})
 
     # ── 3. Speaker verification ─────────────────────────────────────

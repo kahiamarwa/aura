@@ -19,37 +19,35 @@ Tu dois determiner si une phrase est adressee a Aura (l'assistant) ou si c'est u
 
 Reponds UNIQUEMENT par un JSON: {"directed": true/false, "confidence": 0.0-1.0}
 
-Indices que c'est pour Aura:
-- Imperatifs: cherche, trouve, montre, envoie, dis-moi, explique
+REGLE: dans le doute, c'est POUR Aura (directed=true). Ne mets directed=false avec
+une confidence haute (>0.8) QUE si c'est CLAIREMENT une conversation entre humains.
+
+Indices que c'est pour Aura (directed=true):
+- Toute demande d'information ou question: quel, comment, pourquoi, ou, quand,
+  combien, "on peut avoir...", "c'est quoi...", "donne...", meteo, temperature, heure
+- Imperatifs: cherche, trouve, montre, envoie, dis-moi, explique, rappelle, ajoute
 - 2eme personne: tu peux, est-ce que tu, tu sais
-- Questions d'information: quel, comment, pourquoi, ou, quand, combien
 - Suite logique de la derniere reponse d'Aura (meme sujet)
 - Marqueurs d'attention: hey, ok, alors, ecoute
 
-Indices que c'est PAS pour Aura:
-- 3eme personne: il dit, elle pense, on va
-- Adresse a quelqu'un d'autre: prenom + virgule
-- Conversation sociale: oui d'accord, non mais, attends
-- Sujet sans rapport avec la derniere reponse d'Aura"""
+Indices que c'est PAS pour Aura (directed=false, confidence haute SEULEMENT si evident):
+- Adresse a un prenom: "Paul, tu viens ?"
+- Recit a la 3eme personne sur des gens: "il dit que", "elle pense que"
+- Pure conversation sociale sans demande: "oui d'accord", "non mais attends"
+NB: "on peut avoir X" / "on regarde X" = une DEMANDE = pour Aura (directed=true)."""
 
 
-@router.post("/api/classify-intent")
-async def classify_intent_endpoint(raw_request: Request):
-    """Classify whether a transcript is directed at the assistant using Claude Haiku.
+async def classify_intent(text: str, context: list[str]) -> dict:
+    """Classify whether a transcript is directed at Aura (reusable).
 
-    Body: { "text": str, "context": [str] }
     Returns: { "directed": bool, "confidence": float, "method": str }
+    Fails OPEN (directed=True) on any error except empty input.
     """
-    body = await raw_request.json()
-    text = body.get("text", "")
-    context = body.get("context", [])
-
     if not text.strip():
         return {"directed": False, "confidence": 1.0, "method": "empty"}
 
     settings = get_settings()
 
-    # Build user message with context
     user_msg = f'Phrase captee: "{text}"'
     if context:
         user_msg += f'\n\nDerniere reponse d\'Aura: "{context[-1][:200]}"'
@@ -109,3 +107,10 @@ async def classify_intent_endpoint(raw_request: Request):
     except Exception as e:
         logger.warning("[IntentClassify] Error: %s, defaulting to directed", e)
         return {"directed": True, "confidence": 0.5, "method": "fallback"}
+
+
+@router.post("/api/classify-intent")
+async def classify_intent_endpoint(raw_request: Request):
+    """HTTP wrapper around classify_intent. Body: { text, context: [str] }."""
+    body = await raw_request.json()
+    return await classify_intent(body.get("text", ""), body.get("context", []))

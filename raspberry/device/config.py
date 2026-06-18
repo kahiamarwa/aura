@@ -80,7 +80,9 @@ TARGET_KEEP_THRESHOLD = float(os.getenv("TARGET_KEEP_THRESHOLD", "0.0"))
 # ── Endpointing SÉMANTIQUE (tolère les pauses de réflexion) ──────────
 # À chaque pause, le cloud vérifie si la phrase est finie (Haiku). Si tu
 # réfléchissais (phrase incomplète), on garde l'écoute ouverte.
-SEMANTIC_ENDPOINTING = os.getenv("SEMANTIC_ENDPOINTING", "1") == "1"
+# OFF par défaut : il bouclait (Haiku « incomplet » sur des phrases complètes).
+# Le hang locuteur cible (2s) couvre déjà les pauses de réflexion normales.
+SEMANTIC_ENDPOINTING = os.getenv("SEMANTIC_ENDPOINTING", "0") == "1"
 SEMANTIC_MAX_CHECKS = 3        # nb max de vérifications de complétude par commande
 SEMANTIC_MAX_S = 15.0          # au-delà → on traite (cap de sécurité)
 TARGET_WAIT_CONTINUE_S = 3.0   # délai d'attente de la suite après une pause de réflexion
