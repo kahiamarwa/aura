@@ -117,11 +117,11 @@ def _verify_speaker(user_token: str | None, wav_data: bytes) -> dict:
 DEVICE_CONV_TITLE = "🔊 Enceinte Aura"
 
 
-def _persist_device_conversation(user_token: str, user_text: str, assistant_text: str):
+def _persist_device_conversation(user_token: str, user_text: str, assistant_text: str, attachments=None):
     """Persiste la conversation de l'enceinte dans Supabase (fire-and-forget).
 
-    L'app/web peut alors l'afficher (en direct via realtime). Une seule
-    conversation « Enceinte » par utilisateur, qui accumule les échanges.
+    L'app/web peut alors l'afficher (en direct via realtime), AVEC les pièces
+    jointes (rapport PDF, présentation…). Une conversation « Enceinte » par user.
     """
     if not user_token:
         return
@@ -139,13 +139,21 @@ def _persist_device_conversation(user_token: str, user_text: str, assistant_text
                 {"user_id": user_id, "title": DEVICE_CONV_TITLE}
             ).execute()
             conv_id = r.data[0]["id"]
+        assistant_msg = {
+            "conversation_id": conv_id, "user_id": user_id,
+            "role": "assistant", "content": assistant_text,
+        }
+        if attachments:
+            assistant_msg["attachments"] = attachments
         supabase.table("conversation_messages").insert([
             {"conversation_id": conv_id, "user_id": user_id, "role": "user", "content": user_text},
-            {"conversation_id": conv_id, "user_id": user_id, "role": "assistant", "content": assistant_text},
+            assistant_msg,
         ]).execute()
         supabase.table("conversations").update(
             {"updated_at": datetime.now(timezone.utc).isoformat()}
         ).eq("id", conv_id).execute()
+        # nettoie la réponse live (la version persistée prend le relais)
+        _push_status(user_token, response=None, task=None)
     except Exception as e:
         logger.warning("[converse] persist conversation error: %s", e)
 
@@ -160,30 +168,29 @@ def _uid_from_jwt(token: str) -> str | None:
         return None
 
 
-def _push_task(user_token: str | None, task: str | None):
-    """Pousse l'OUTIL en cours de l'agent dans device_status (animations front)."""
+def _push_status(user_token: str | None, **fields):
+    """Met à jour device_status (task/response) pour l'affichage live front."""
     uid = _uid_from_jwt(user_token) if user_token else None
     if not uid:
         return
     try:
-        get_service_client().table("device_status").upsert({
-            "user_id": uid,
-            "task": task,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).execute()
+        row = {"user_id": uid, "updated_at": datetime.now(timezone.utc).isoformat()}
+        row.update(fields)
+        get_service_client().table("device_status").upsert(row).execute()
     except Exception as e:
-        logger.debug("[converse] push task error: %s", e)
+        logger.debug("[converse] push status error: %s", e)
 
 
 async def _run_agent(user_token, transcript, enriched, settings):
-    """Consomme le flux SSE de l'agent : accumule le texte, pousse l'outil en
-    cours (animation front), renvoie (response_text, attachments).
+    """Consomme le flux SSE de l'agent : STREAME le texte + pousse l'outil en
+    cours (animations front), renvoie (response_text, attachments).
 
     Fallback sur get_response si le stream échoue → ZÉRO régression.
     """
     response_text = ""
     attachments = None
     current_event = None
+    last_pushed = 0
     try:
         async for line in llm_service.stream_response(
             command=transcript, context=[],
@@ -200,21 +207,25 @@ async def _run_agent(user_token, transcript, enriched, settings):
                     continue
                 if current_event == "text_delta":
                     response_text += data.get("delta", "")
+                    # push périodique → le front voit le texte APPARAÎTRE (anti-latence perçue)
+                    if len(response_text) - last_pushed >= 40 or response_text.endswith((".", "!", "?", ":", "\n")):
+                        _push_status(user_token, response=response_text, task=None)
+                        last_pushed = len(response_text)
                 elif current_event == "tool_start":
                     logger.info("[converse] outil agent : %s", data.get("name"))
-                    _push_task(user_token, data.get("name"))
+                    _push_status(user_token, task=data.get("name"))
                 elif current_event == "done":
                     response_text = data.get("response") or response_text
                     attachments = data.get("attachments")
                 elif current_event == "error":
                     raise RuntimeError("agent stream error")
-        _push_task(user_token, None)
+        _push_status(user_token, task=None)
         if response_text.strip():
             return response_text, attachments
         raise ValueError("empty stream")
     except Exception as e:
         logger.warning("[converse] stream agent KO (%s) → fallback get_response", e)
-        _push_task(user_token, None)
+        _push_status(user_token, task=None)
         result = await llm_service.get_response(
             command=transcript, context=[],
             agent_url=settings.AURA_AGENT_URL, agent_token=settings.AURA_AGENT_TOKEN,
@@ -293,7 +304,7 @@ async def converse(
             await agent_task
         except BaseException:
             pass
-        _push_task(user_token, None)
+        _push_status(user_token, task=None, response=None)
         return JSONResponse({
             "status": "rejected",
             "transcript": transcript,
@@ -304,16 +315,16 @@ async def converse(
         logger.info("[converse] locuteur non reconnu (%s, %.2f) mais on répond (verif non bloquante)",
                     verify.get("speaker_name"), verify.get("score") or 0.0)
 
-    response_text, _attachments = await agent_task
+    response_text, attachments = await agent_task
     response_text = (response_text or "").strip()
-    logger.info("[converse] response=%r", response_text[:80])
+    logger.info("[converse] response=%r attachments=%s", response_text[:80], bool(attachments))
     if not response_text:
         return JSONResponse({"status": "empty_response", "transcript": transcript})
 
     # ── Persistance (fire-and-forget) : l'app/web pourra l'afficher ──
     threading.Thread(
         target=_persist_device_conversation,
-        args=(user_token, transcript, response_text),
+        args=(user_token, transcript, response_text, attachments),
         daemon=True,
     ).start()
 
