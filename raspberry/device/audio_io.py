@@ -143,10 +143,46 @@ class Player:
         finally:
             self._proc = None
 
+    # ── Lecture en STREAMING (Aura parle dès le 1er chunk) ───────────
+    def start_stream(self):
+        self.stop()
+        try:
+            self._proc = subprocess.Popen(
+                ["mpg123", "-q", "-"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            logger.error("[player] mpg123 introuvable — sudo apt install mpg123")
+            self._proc = None
+
+    def feed(self, chunk: bytes):
+        if self._proc and self._proc.poll() is None:
+            try:
+                self._proc.stdin.write(chunk)
+            except Exception:
+                pass
+
+    def end_stream(self):
+        """Ferme l'entrée et attend la fin de la lecture (bloquant)."""
+        p = self._proc
+        if p and p.poll() is None:
+            try:
+                p.stdin.close()
+            except Exception:
+                pass
+            try:
+                p.wait()
+            except Exception:
+                pass
+        if self._proc is p:
+            self._proc = None
+
     def stop(self):
         if self._proc and self._proc.poll() is None:
             self._proc.terminate()
-            self._proc = None
+        self._proc = None
 
     @property
     def is_playing(self) -> bool:

@@ -50,32 +50,55 @@ def converse(command_pcm: np.ndarray, from_conversing: bool, context: list[str],
     continue d'écouter (endpointing sémantique).
 
     Retourne :
-      {"kind": "audio", "mp3": bytes, "transcript": str, "response": str, "speaker": str}
+      {"kind": "audio", "chunks": <générateur de bytes MP3>, "close": fn,
+       "transcript": str, "response": str, "speaker": str}
       {"kind": "status", "status": "empty"|"not_directed"|"rejected"|"incomplete"|..., ...}
+
+    Pour "audio", on STREAME le MP3 : Aura commence à parler dès le 1er chunk.
+    L'appelant DOIT consommer "chunks" puis appeler "close()" (ferme la connexion).
     """
     import json
     wav = pcm_to_wav_bytes(command_pcm)
-    with httpx.Client(timeout=httpx.Timeout(60.0)) as client:
-        resp = client.post(
-            _url("/api/device/converse"),
-            headers=_headers(),
-            data={"from_conversing": "true" if from_conversing else "false",
-                  "context": json.dumps(context),
-                  "tentative": "true" if tentative else "false"},
-            files={"audio": ("command.wav", wav, "audio/wav")},
-        )
+    client = httpx.Client(timeout=httpx.Timeout(60.0))
+    cm = client.stream(
+        "POST",
+        _url("/api/device/converse"),
+        headers=_headers(),
+        data={"from_conversing": "true" if from_conversing else "false",
+              "context": json.dumps(context),
+              "tentative": "true" if tentative else "false"},
+        files={"audio": ("command.wav", wav, "audio/wav")},
+    )
+    resp = cm.__enter__()
+    try:
         resp.raise_for_status()
         ctype = resp.headers.get("content-type", "")
-        if ctype.startswith("audio/"):
-            return {
-                "kind": "audio",
-                "mp3": resp.content,
-                "transcript": unquote(resp.headers.get("X-Transcript", "")),
-                "response": unquote(resp.headers.get("X-Response", "")),
-                "speaker": unquote(resp.headers.get("X-Speaker", "")),
-            }
-        data = resp.json()
-        return {"kind": "status", **data}
+        if not ctype.startswith("audio/"):
+            data = json.loads(resp.read() or b"{}")
+            cm.__exit__(None, None, None)
+            client.close()
+            return {"kind": "status", **data}
+
+        def _close():
+            try:
+                cm.__exit__(None, None, None)
+            finally:
+                client.close()
+
+        return {
+            "kind": "audio",
+            "chunks": resp.iter_bytes(),
+            "close": _close,
+            "transcript": unquote(resp.headers.get("X-Transcript", "")),
+            "response": unquote(resp.headers.get("X-Response", "")),
+            "speaker": unquote(resp.headers.get("X-Speaker", "")),
+        }
+    except Exception:
+        try:
+            cm.__exit__(None, None, None)
+        finally:
+            client.close()
+        raise
 
 
 def transcribe(pcm: np.ndarray) -> str:

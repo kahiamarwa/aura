@@ -198,16 +198,38 @@ class Orchestrator:
         logger.info("[USER] %s", res.get("transcript", ""))
         logger.info("[AURA] %s", res.get("response", ""))
         self._spoke = True
-        barge = self._speak(res["mp3"], frames)
+        barge = self._speak(res, frames)
         # Barge-in pendant la réponse = l'utilisateur enchaîne → réécoute (intent gating)
         return ("LISTENING", True) if barge else ("CONVERSING", False)
 
-    # ── SPEAKING : lecture + barge-in (anti-écho) ────────────────────
-    def _speak(self, mp3: bytes, frames) -> bool:
-        """Joue le MP3. Retourne True si interrompu (barge-in), False si fini."""
+    # ── SPEAKING : lecture EN STREAMING + barge-in (anti-écho) ───────
+    def _speak(self, res: dict, frames) -> bool:
+        """Joue le MP3 EN STREAMING (Aura parle dès le 1er chunk).
+
+        Retourne True si interrompu (barge-in), False si fini.
+        """
         self.state = "SPEAKING"
         self.ambient.set_enabled(False)
-        t = threading.Thread(target=self.player.play_mp3, args=(mp3,), daemon=True)
+        stop = threading.Event()
+        self.player.start_stream()
+
+        def feed():
+            try:
+                for chunk in res["chunks"]:
+                    if stop.is_set():
+                        break
+                    self.player.feed(chunk)
+            except Exception:
+                pass
+            finally:
+                try:
+                    res.get("close", lambda: None)()
+                except Exception:
+                    pass
+                if not stop.is_set():
+                    self.player.end_stream()
+
+        t = threading.Thread(target=feed, daemon=True)
         t.start()
         logger.info("[state] SPEAKING — (« Stop Aura » pour couper)")
         gated = self.target.has_reference   # barge-in vocal seulement si enrôlé
@@ -215,7 +237,7 @@ class Orchestrator:
         win_max = int(1.0 * config.SAMPLE_RATE)
         hop = 0.0
         streak = 0
-        while t.is_alive():
+        while self.player.is_playing or t.is_alive():
             try:
                 frame = next(frames)
             except StopIteration:
@@ -224,6 +246,7 @@ class Orchestrator:
             # ANTI-ÉCHO : 'activate' ignoré (Aura s'entend) ; 'Stop Aura' coupe toujours.
             if ev == "interrupt":
                 logger.info("[state] STOP — coupure")
+                stop.set()
                 self.player.stop()
                 return True
             # Barge-in par la VOIX DE L'UTILISATEUR (pas YouTube ni la voix d'Aura).
@@ -236,11 +259,11 @@ class Orchestrator:
                         streak += 1
                         if streak >= 2:
                             logger.info("[state] barge-in (ta voix) — coupure")
+                            stop.set()
                             self.player.stop()
                             return True
                     else:
                         streak = 0
-        t.join(timeout=0.5)
         return False
 
     # ── CONVERSING : fenêtre 12 s, follow-up sans wake word ──────────
