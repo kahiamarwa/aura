@@ -6,8 +6,12 @@ soit un statut (rejeté / pas pour Aura).
 """
 
 import io
+import os
+import json
+import time
 import wave
 import logging
+import threading
 from urllib.parse import unquote
 
 import httpx
@@ -16,6 +20,73 @@ import numpy as np
 from . import config
 
 logger = logging.getLogger(__name__)
+
+
+# ── Auth durable : JWT renouvelé automatiquement via refresh token ──────
+_tok_lock = threading.Lock()
+_access_token = config.USER_TOKEN or None
+_access_exp = 0.0
+_refresh_token = config.REFRESH_TOKEN or None
+
+
+def _load_session():
+    """Charge le dernier JWT/refresh persisté (survit aux redémarrages)."""
+    global _access_token, _refresh_token
+    try:
+        if os.path.exists(config.TOKEN_FILE):
+            with open(config.TOKEN_FILE) as f:
+                d = json.load(f)
+            _refresh_token = d.get("refresh_token") or _refresh_token
+            _access_token = d.get("access_token") or _access_token
+    except Exception:
+        pass
+
+
+def _save_session():
+    try:
+        os.makedirs(os.path.dirname(config.TOKEN_FILE), exist_ok=True)
+        with open(config.TOKEN_FILE, "w") as f:
+            json.dump({"access_token": _access_token, "refresh_token": _refresh_token}, f)
+    except Exception as e:
+        logger.debug("[auth] persistance session impossible: %s", e)
+
+
+def _refresh_access() -> str | None:
+    """Échange le refresh token contre un JWT frais (Supabase). Persiste le tout."""
+    global _access_token, _refresh_token, _access_exp
+    if not _refresh_token or not config.SUPABASE_URL or not config.SUPABASE_ANON_KEY:
+        return _access_token
+    r = httpx.post(
+        config.SUPABASE_URL.rstrip("/") + "/auth/v1/token",
+        params={"grant_type": "refresh_token"},
+        headers={"apikey": config.SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+        json={"refresh_token": _refresh_token},
+        timeout=10.0,
+    )
+    r.raise_for_status()
+    d = r.json()
+    _access_token = d["access_token"]
+    _refresh_token = d.get("refresh_token", _refresh_token)   # rotation
+    _access_exp = time.time() + int(d.get("expires_in", 3600)) - 120
+    _save_session()
+    logger.info("[auth] JWT renouvelé automatiquement (expire dans %ss)", d.get("expires_in"))
+    return _access_token
+
+
+def get_access_token() -> str | None:
+    """JWT courant, renouvelé tout seul si expiré. Plus jamais d'export manuel."""
+    with _tok_lock:
+        if _access_token and time.time() < _access_exp:
+            return _access_token
+        if _refresh_token:
+            try:
+                return _refresh_access()
+            except Exception as e:
+                logger.warning("[auth] échec du refresh (JWT statique en repli): %s", e)
+        return _access_token
+
+
+_load_session()
 
 
 def pcm_to_wav_bytes(pcm: np.ndarray, sample_rate: int = config.SAMPLE_RATE) -> bytes:
@@ -32,8 +103,9 @@ def _headers() -> dict:
     h = {}
     if config.DEVICE_TOKEN:
         h["X-Device-Token"] = config.DEVICE_TOKEN
-    if config.USER_TOKEN:
-        h["Authorization"] = f"Bearer {config.USER_TOKEN}"
+    tok = get_access_token()
+    if tok:
+        h["Authorization"] = f"Bearer {tok}"
     return h
 
 
@@ -46,7 +118,7 @@ def push_state(state: str, transcript: str = "") -> None:
 
     Fire-and-forget : on n'attend pas, on ne bloque jamais l'orchestrateur.
     """
-    if not config.USER_TOKEN:
+    if not get_access_token():
         return
     try:
         with httpx.Client(timeout=httpx.Timeout(3.0)) as client:

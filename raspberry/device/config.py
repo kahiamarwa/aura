@@ -14,7 +14,20 @@ from pathlib import Path
 # ── Cloud ────────────────────────────────────────────────────────────
 CLOUD_BACKEND_URL = os.getenv("CLOUD_BACKEND_URL", "http://localhost:8000")
 DEVICE_TOKEN = os.getenv("DEVICE_TOKEN", "")
-USER_TOKEN = os.getenv("USER_TOKEN", "")  # JWT de l'utilisateur appairé
+USER_TOKEN = os.getenv("USER_TOKEN", "")  # JWT statique (fallback / dev)
+
+# ── Auth DURABLE : renouvellement automatique du JWT ─────────────────
+# Le device stocke un REFRESH TOKEN (longue durée, provisionné à l'appairage)
+# et renouvelle le JWT tout seul via Supabase. Le JWT renouvelé est persisté
+# dans AURA_TOKEN_FILE → survit aux redémarrages, AUCUN ré-export manuel.
+# SUPABASE_URL + ANON_KEY sont PUBLICS (pas des secrets : la RLS protège tout).
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://wdmlgtrjptfhxldmqxzm.supabase.co")
+SUPABASE_ANON_KEY = os.getenv(
+    "SUPABASE_ANON_KEY",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndkbWxndHJqcHRmaHhsZG1xeHptIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIxOTA3NjAsImV4cCI6MjA4Nzc2Njc2MH0.VHrom_X0cdoDd5Yh04mZnDHQKecdiKH6QxMkmLCgIsM",
+)
+REFRESH_TOKEN = os.getenv("AURA_REFRESH_TOKEN", "")
+TOKEN_FILE = os.path.expanduser(os.getenv("AURA_TOKEN_FILE", "~/.aura/session.json"))
 
 # ── Audio ────────────────────────────────────────────────────────────
 SAMPLE_RATE = 16000          # openWakeWord + STT attendent 16 kHz mono
