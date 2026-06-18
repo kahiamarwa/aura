@@ -41,6 +41,21 @@ def _url(path: str) -> str:
     return config.CLOUD_BACKEND_URL.rstrip("/") + path
 
 
+def push_state(state: str, transcript: str = "") -> None:
+    """Pousse l'état courant du device vers le cloud (pour l'affichage live web).
+
+    Fire-and-forget : on n'attend pas, on ne bloque jamais l'orchestrateur.
+    """
+    if not config.USER_TOKEN:
+        return
+    try:
+        with httpx.Client(timeout=httpx.Timeout(3.0)) as client:
+            client.post(_url("/api/device/state"), headers=_headers(),
+                        data={"state": state, "transcript": transcript})
+    except Exception:
+        pass
+
+
 def converse(command_pcm: np.ndarray, from_conversing: bool, context: list[str],
              tentative: bool = False) -> dict:
     """Envoie la commande au cloud (pipeline gated complet).

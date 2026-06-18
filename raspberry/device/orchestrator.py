@@ -47,6 +47,24 @@ class Orchestrator:
         self.player = Player()
         self.ambient = AmbientContext()
         self.state = "IDLE"
+        self.last_transcript = ""        # dernière commande (pour l'affichage live)
+        self._stop_watch = False
+
+    # ── Pousse l'état au cloud à chaque changement (affichage live web) ─
+    def _state_watcher(self):
+        last = None
+        last_push = 0.0
+        while not self._stop_watch:
+            st = self.state
+            now = time.time()
+            # pousse à chaque changement, + heartbeat toutes les 15s (détection online)
+            if st != last or (now - last_push) > 15.0:
+                last, last_push = st, now
+                tr = self.last_transcript if st in ("THINKING", "SPEAKING") else ""
+                threading.Thread(
+                    target=cloud.push_state, args=(st, tr), daemon=True
+                ).start()
+            time.sleep(0.08)
 
     # ── LISTENING : enregistrement avec endpointing par locuteur cible ─
     def _record_command(self, frames, continuation: bool = False) -> np.ndarray | None:
@@ -211,6 +229,7 @@ class Orchestrator:
 
         logger.info("[USER] %s", res.get("transcript", ""))
         logger.info("[AURA] %s", res.get("response", ""))
+        self.last_transcript = res.get("transcript", "")   # pour l'affichage live
         self._spoke = True
         barge = self._speak(res, frames)
         # Barge-in pendant la réponse = l'utilisateur enchaîne → réécoute (intent gating)
@@ -321,6 +340,7 @@ class Orchestrator:
     def run(self):
         self.target.load_references()   # cache l'empreinte vocale (endpointing local)
         self.ambient.start()
+        threading.Thread(target=self._state_watcher, daemon=True).start()  # état → web live
         logger.info("Aura prêt. Dites « Dis Aura ».")
         with MicStream() as mic:
             frames = mic.frames()

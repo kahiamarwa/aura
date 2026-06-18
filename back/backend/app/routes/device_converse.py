@@ -247,6 +247,33 @@ async def converse(
     )
 
 
+@router.post("/api/device/state")
+async def device_state(
+    raw_request: Request,
+    state: str = Form(...),
+    transcript: str = Form(""),
+):
+    """Reçoit l'état courant de l'enceinte (IDLE/LISTENING/THINKING/SPEAKING…)
+    et l'écrit dans Supabase pour l'affichage EN DIRECT côté app/web.
+    """
+    user_token = _check_device(raw_request)
+    if not user_token:
+        return {"ok": False, "reason": "no_token"}
+    try:
+        supabase = get_supabase_client(user_token)
+        user_id = get_user_id(supabase, user_token)
+        supabase.table("device_status").upsert({
+            "user_id": user_id,
+            "state": state,
+            "transcript": transcript or None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+        return {"ok": True}
+    except Exception as e:
+        logger.warning("[device] state upsert error: %s", e)
+        return {"ok": False, "reason": "error"}
+
+
 @router.post("/api/device/transcribe")
 async def transcribe(raw_request: Request, audio: UploadFile = File(...)):
     """Transcription simple pour le contexte ambiant (batch passif du device)."""
