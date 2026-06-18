@@ -132,6 +132,20 @@ class Orchestrator:
             return None
         return pcm
 
+    # ── Le mot de réveil vient-il bien de l'utilisateur enrôlé ? ─────
+    def _wake_is_owner(self, audio: np.ndarray) -> bool:
+        """Anti faux-déclenchement : on n'active que pour la voix enrôlée.
+
+        Si pas d'empreinte ou gate désactivé → on accepte (fallback).
+        """
+        if not config.WAKE_SPEAKER_GATE or not self.target.has_reference:
+            return True
+        is_user, score = self.target.is_target(audio)
+        if is_user is False:
+            logger.info("[wake] mot de réveil mais pas ta voix (score=%.2f) → ignoré", score)
+            return False
+        return True
+
     # ── Helper : la fenêtre contient-elle la voix de l'UTILISATEUR ? ──
     def _user_in_window(self, window: np.ndarray) -> bool:
         """True si la voix de l'utilisateur enrôlé est présente (locuteur cible).
@@ -279,12 +293,17 @@ class Orchestrator:
         win_max = int(1.0 * config.SAMPLE_RATE)
         hop = 0.0
         streak = 0
+        recent = np.zeros(0, dtype=np.int16)
+        recent_max = int(1.5 * config.SAMPLE_RATE)
         for frame in frames:
             if time.time() >= deadline:
                 return "IDLE", False
+            recent = np.concatenate([recent, frame])[-recent_max:]
             ev = self.wake.process(frame)
-            if ev in ("activate", "interrupt"):
-                return "LISTENING", False        # wake word explicite (toujours)
+            if ev == "interrupt":
+                return "IDLE", False             # « Stop Aura » = ARRÊTER (pas écouter)
+            if ev == "activate" and self._wake_is_owner(recent):
+                return "LISTENING", False        # « Dis Aura » par TOI → écoute
             if gated:
                 win = np.concatenate([win, frame])[-win_max:]
                 hop += FRAME_S
@@ -308,13 +327,17 @@ class Orchestrator:
             self.state = "IDLE"
             from_conversing = False
             wasted = 0   # garde-fou : commandes consécutives sans réponse → IDLE
+            recent = np.zeros(0, dtype=np.int16)        # ~1.5s pour le speaker-gate
+            recent_max = int(1.5 * config.SAMPLE_RATE)
             while True:
                 if self.state == "IDLE":
                     wasted = 0
                     self.ambient.set_enabled(True)
                     frame = next(frames)
                     self.ambient.feed(frame)          # contexte ambiant
-                    if self.wake.process(frame) == "activate":
+                    recent = np.concatenate([recent, frame])[-recent_max:]
+                    # « Dis Aura » n'active QUE si c'est ta voix (anti faux-déclenchement)
+                    if self.wake.process(frame) == "activate" and self._wake_is_owner(recent):
                         self.state, from_conversing = "LISTENING", False
 
                 elif self.state == "LISTENING":

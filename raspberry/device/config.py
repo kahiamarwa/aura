@@ -29,10 +29,13 @@ OPENWAKE_DIR = Path(os.getenv("OPENWAKE_DIR", _REPO_ROOT / "openwake"))
 ACTIVATE_MODEL = os.getenv("ACTIVATE_MODEL", "Aura_test.onnx")  # "Dis Aura"
 INTERRUPT_MODEL = os.getenv("INTERRUPT_MODEL", "stop_aura.onnx")  # "Stop Aura"
 WAKE_THRESHOLDS = {
-    Path(ACTIVATE_MODEL).stem: float(os.getenv("ACTIVATE_THRESHOLD", "0.5")),
+    Path(ACTIVATE_MODEL).stem: float(os.getenv("ACTIVATE_THRESHOLD", "0.6")),
     # stop_aura plus strict : il faux-déclenche sur la parole ambiante
     Path(INTERRUPT_MODEL).stem: float(os.getenv("INTERRUPT_THRESHOLD", "0.85")),
 }
+# Vérifier que le wake word vient bien de l'utilisateur enrôlé (anti faux-déclenchement
+# sur les voix des autres). Désactivable WAKE_SPEAKER_GATE=0.
+WAKE_SPEAKER_GATE = os.getenv("WAKE_SPEAKER_GATE", "1") == "1"
 WAKE_COOLDOWN_S = 1.5
 
 # ── Silero VAD (détection de parole robuste, modèle ONNX) ────────────
