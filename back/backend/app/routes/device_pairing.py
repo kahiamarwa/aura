@@ -6,11 +6,9 @@ Le device ne détient donc AUCUN credential utilisateur (zéro secret sur l'ence
 """
 
 import time
-import json
-import base64
 import logging
 
-import httpx
+import jwt as pyjwt
 from fastapi import APIRouter, Request, HTTPException
 
 from app.config import get_settings
@@ -19,45 +17,41 @@ from app.services.supabase_client import get_supabase_client, get_user_id, get_s
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Cache JWT par device : device_token → (access_token, exp)
+# Cache JWT forgé par device : device_token → (jwt, exp)
 _jwt_cache: dict[str, tuple[str, float]] = {}
+_JWT_TTL = 3600
 
 
-def _jwt_exp(token: str) -> float:
-    try:
-        payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        return float(json.loads(base64.urlsafe_b64decode(payload)).get("exp", 0))
-    except Exception:
-        return 0.0
+def _mint_user_jwt(user_id: str) -> str | None:
+    """Forge un JWT utilisateur court (signé avec le secret JWT du projet).
 
-
-def _mint_user_jwt(refresh_token: str):
-    """refresh token → (access_token, refresh_token rotaté). (None, None) si échec."""
+    SESSION DÉDIÉE par enceinte : indépendante du web, aucun refresh token
+    partagé → zéro conflit, la sécurité Supabase reste activée.
+    """
     settings = get_settings()
-    if not refresh_token or not settings.SUPABASE_URL or not settings.SUPABASE_ANON_KEY:
-        return None, None
+    secret = settings.SUPABASE_JWT_SECRET
+    if not secret:
+        logger.error("[pair] SUPABASE_JWT_SECRET manquant — impossible de forger le JWT")
+        return None
+    now = int(time.time())
+    payload = {
+        "sub": user_id,
+        "aud": "authenticated",
+        "role": "authenticated",
+        "iat": now,
+        "exp": now + _JWT_TTL,
+    }
     try:
-        r = httpx.post(
-            settings.SUPABASE_URL.rstrip("/") + "/auth/v1/token",
-            params={"grant_type": "refresh_token"},
-            headers={"apikey": settings.SUPABASE_ANON_KEY, "Content-Type": "application/json"},
-            json={"refresh_token": refresh_token},
-            timeout=10.0,
-        )
-        if r.status_code != 200:
-            logger.warning("[pair] mint JWT échec %d", r.status_code)
-            return None, None
-        d = r.json()
-        return d.get("access_token"), d.get("refresh_token")
+        return pyjwt.encode(payload, secret, algorithm="HS256")
     except Exception as e:
         logger.warning("[pair] mint JWT error: %s", e)
-        return None, None
+        return None
 
 
 def resolve_user_token(request: Request) -> str | None:
-    """JWT utilisateur pour ce device (via l'appairage), avec cache.
+    """JWT utilisateur pour ce device (forgé à la demande), avec cache.
 
+    device_token → user_id (table devices, service role) → JWT forgé.
     Repli : header Authorization (rétrocompat dev). None si rien.
     """
     device_token = request.headers.get("x-device-token", "").strip()
@@ -67,16 +61,13 @@ def resolve_user_token(request: Request) -> str | None:
             return cached[0]
         try:
             svc = get_service_client()
-            r = (svc.table("devices").select("refresh_token")
+            r = (svc.table("devices").select("user_id")
                  .eq("device_token", device_token).limit(1).execute())
-            if r.data and r.data[0].get("refresh_token"):
-                access, new_refresh = _mint_user_jwt(r.data[0]["refresh_token"])
-                if access:
-                    _jwt_cache[device_token] = (access, _jwt_exp(access) - 120.0)
-                    if new_refresh and new_refresh != r.data[0]["refresh_token"]:
-                        (svc.table("devices").update({"refresh_token": new_refresh})
-                         .eq("device_token", device_token).execute())
-                    return access
+            if r.data and r.data[0].get("user_id"):
+                token = _mint_user_jwt(r.data[0]["user_id"])
+                if token:
+                    _jwt_cache[device_token] = (token, time.time() + _JWT_TTL - 120)
+                    return token
         except Exception as e:
             logger.warning("[pair] resolve error: %s", e)
     # Repli rétrocompat : Authorization: Bearer <JWT>
@@ -96,14 +87,13 @@ def _user_from_auth(request: Request) -> str:
 async def pair_device(raw_request: Request):
     """Lie une enceinte au compte connecté.
 
-    Body: { device_token, label, refresh_token }
-    refresh_token = celui de la session web de l'utilisateur (géré ensuite serveur).
+    Body: { device_token, label }. Aucun secret côté device : le backend
+    forgera un JWT à la demande à partir de ce mapping device→utilisateur.
     """
     user_token = _user_from_auth(raw_request)
     body = await raw_request.json()
     device_token = (body.get("device_token") or "").strip()
     label = (body.get("label") or "Enceinte Aura").strip()
-    refresh_token = (body.get("refresh_token") or "").strip()
     if not device_token:
         raise HTTPException(status_code=400, detail="device_token required")
     try:
@@ -113,7 +103,6 @@ async def pair_device(raw_request: Request):
             "device_token": device_token,
             "user_id": user_id,
             "label": label,
-            "refresh_token": refresh_token or None,
         }).execute()
         _jwt_cache.pop(device_token, None)   # invalide le cache
         logger.info("[pair] enceinte « %s » liée à l'utilisateur", label)

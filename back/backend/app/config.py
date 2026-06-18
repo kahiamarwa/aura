@@ -10,8 +10,12 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_ANON_KEY: str = ""
     # Clé service role (SERVEUR uniquement, jamais sur le device) : permet de
-    # résoudre device→utilisateur et d'agir pour l'utilisateur appairé.
+    # résoudre device→utilisateur (lecture de la table devices, bypass RLS).
     SUPABASE_SERVICE_ROLE_KEY: str = ""
+    # Secret JWT du projet (SERVEUR uniquement) : permet de FORGER un JWT
+    # utilisateur court pour l'enceinte appairée — session dédiée par device,
+    # indépendante du web (aucun refresh token partagé, zéro conflit).
+    SUPABASE_JWT_SECRET: str = ""
     ANTHROPIC_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
     MISTRAL_API_KEY: str = ""
