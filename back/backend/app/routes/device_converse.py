@@ -274,10 +274,32 @@ async def device_state(
         return {"ok": False, "reason": "error"}
 
 
+def _persist_ambient(user_token: str, text: str):
+    """Ajoute un segment ambiant à device_status.ambient (borné aux 12 derniers)."""
+    if not user_token or not text:
+        return
+    try:
+        supabase = get_supabase_client(user_token)
+        user_id = get_user_id(supabase, user_token)
+        row = (
+            supabase.table("device_status").select("ambient")
+            .eq("user_id", user_id).limit(1).execute()
+        )
+        ambient = (row.data[0].get("ambient") or []) if row.data else []
+        ambient = (ambient + [{"text": text, "ts": datetime.now(timezone.utc).isoformat()}])[-12:]
+        supabase.table("device_status").upsert({
+            "user_id": user_id,
+            "ambient": ambient,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+    except Exception as e:
+        logger.warning("[device] ambient persist error: %s", e)
+
+
 @router.post("/api/device/transcribe")
 async def transcribe(raw_request: Request, audio: UploadFile = File(...)):
     """Transcription simple pour le contexte ambiant (batch passif du device)."""
-    _check_device(raw_request)
+    user_token = _check_device(raw_request)
     settings = get_settings()
     if not settings.MISTRAL_API_KEY:
         raise HTTPException(status_code=500, detail="MISTRAL_API_KEY not configured")
@@ -286,6 +308,8 @@ async def transcribe(raw_request: Request, audio: UploadFile = File(...)):
         return {"text": ""}
     wav_data = raw if raw[:4] == b"RIFF" else pcm_to_wav(raw, sample_rate=16000)
     text = (await transcribe_audio(settings.MISTRAL_API_KEY, wav_data) or "").strip()
+    if text and user_token:
+        threading.Thread(target=_persist_ambient, args=(user_token, text), daemon=True).start()
     return {"text": text}
 
 
