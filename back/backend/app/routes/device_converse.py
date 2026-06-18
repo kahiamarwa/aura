@@ -152,8 +152,8 @@ def _persist_device_conversation(user_token: str, user_text: str, assistant_text
         supabase.table("conversations").update(
             {"updated_at": datetime.now(timezone.utc).isoformat()}
         ).eq("id", conv_id).execute()
-        # nettoie la réponse live (la version persistée prend le relais)
-        _push_status(user_token, response=None, task=None)
+        # nettoie l'état live (la version persistée prend le relais)
+        _push_status(user_token, response=None, task=None, speaker=None, verified=None)
     except Exception as e:
         logger.warning("[converse] persist conversation error: %s", e)
 
@@ -314,6 +314,11 @@ async def converse(
     if rejected:
         logger.info("[converse] locuteur non reconnu (%s, %.2f) mais on répond (verif non bloquante)",
                     verify.get("speaker_name"), verify.get("score") or 0.0)
+
+    # Badge de vérification locuteur → front (parité avec l'ancien web : ✓/✗ nom)
+    if verify.get("speaker_name"):
+        _push_status(user_token, speaker=verify.get("speaker_name"),
+                     verified=bool(verify.get("verified")))
 
     response_text, attachments = await agent_task
     response_text = (response_text or "").strip()

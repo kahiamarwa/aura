@@ -67,9 +67,22 @@ def resolve_user_token(request: Request) -> str | None:
                 token = _mint_user_jwt(r.data[0]["user_id"])
                 if token:
                     _jwt_cache[device_token] = (token, time.time() + _JWT_TTL - 120)
+                    if not cached:   # 1re résolution (pas à chaque appel caché)
+                        try:
+                            import datetime as _dt
+                            (svc.table("devices").update(
+                                {"last_seen_at": _dt.datetime.now(_dt.timezone.utc).isoformat()})
+                             .eq("device_token", device_token).execute())
+                        except Exception:
+                            pass
                     return token
+                logger.error("[pair] mint JWT a échoué (SUPABASE_JWT_SECRET ?) pour user %s",
+                             r.data[0]["user_id"])
+            else:
+                logger.warning("[pair] device introuvable dans 'devices' (service role OK ? RLS ?) — rows=%d",
+                               len(r.data or []))
         except Exception as e:
-            logger.warning("[pair] resolve error: %s", e)
+            logger.error("[pair] resolve error: %s: %s", type(e).__name__, e)
     # Repli rétrocompat : Authorization: Bearer <JWT>
     auth = request.headers.get("authorization", "")
     return auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else None
