@@ -72,6 +72,10 @@ TARGET_HOP_S = 0.4            # cadence de décision (toutes les 0.4 s)
 TARGET_HANG_S = float(os.getenv("TARGET_HANG_S", "2.0"))   # absence de TA voix pour clore (tolère les pauses de réflexion)
 TARGET_MISS_HYSTERESIS = 2    # fenêtres "pas lui" consécutives avant de compter l'absence
 TARGET_WAIT_START_S = 4.0     # si TA voix n'apparaît jamais après le wake word → abandon
+# Une fois la commande DÉMARRÉE, on garde tant que le score reste au-dessus de ce
+# seuil (bas) : la voix de l'utilisateur varie, on ne le coupe que si c'est
+# CLAIREMENT quelqu'un d'autre (score nettement négatif). Évite de couper au milieu.
+TARGET_KEEP_THRESHOLD = float(os.getenv("TARGET_KEEP_THRESHOLD", "0.0"))
 
 # ── Endpointing SÉMANTIQUE (tolère les pauses de réflexion) ──────────
 # À chaque pause, le cloud vérifie si la phrase est finie (Haiku). Si tu

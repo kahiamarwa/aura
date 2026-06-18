@@ -180,8 +180,9 @@ async def converse(
     wav_data = raw if raw[:4] == b"RIFF" else pcm_to_wav(raw, sample_rate=16000)
 
     # ── 1. STT ──────────────────────────────────────────────────────
+    _dur = max(0, (len(wav_data) - 44)) / 2 / 16000  # ~durée (PCM16 mono 16k)
     transcript = (await transcribe_audio(settings.MISTRAL_API_KEY, wav_data) or "").strip()
-    logger.info("[converse] transcript=%r from_conv=%s", transcript[:80], from_conv)
+    logger.info("[converse] audio=%.1fs transcript=%r from_conv=%s", _dur, transcript[:80], from_conv)
     if not transcript:
         return JSONResponse({"status": "empty"})
 

@@ -113,17 +113,22 @@ class Orchestrator:
             hop = 0.0
 
             win_rms = _rms(win)
+            speaking = win_rms >= config.CMD_SILENCE_RMS
             if win_rms < config.CMD_SILENCE_RMS * 0.5:
                 present = False                         # clairement silence
             elif use_target and len(win) >= min_win:
                 is_user, score = self.target.is_target(win)
-                if is_user is None:                     # modèle indispo → repli
+                if is_user is None:                     # modèle indispo → repli énergie
                     use_target = False
-                    present = win_rms >= config.CMD_SILENCE_RMS
+                    present = speaking
+                elif not started:
+                    present = bool(is_user)             # DÉMARRAGE strict (c'est bien lui ?)
                 else:
-                    present = is_user
+                    # DÉMARRÉ : on garde tant qu'il PARLE et que ce n'est pas
+                    # CLAIREMENT un autre (sa voix varie 0.2–0.5 → on ne le coupe pas).
+                    present = speaking and (score >= config.TARGET_KEEP_THRESHOLD)
             else:
-                present = win_rms >= config.CMD_SILENCE_RMS
+                present = speaking
 
             if present:
                 if not started:
@@ -133,7 +138,8 @@ class Orchestrator:
             elif started:
                 absent_s += config.TARGET_HOP_S
                 if absent_s >= config.TARGET_HANG_S:
-                    logger.info("[endpoint] fin (%.1fs de parole, hang %.1fs)", total_s, absent_s)
+                    logger.info("[endpoint] fin — %.1fs parlé (clip %.1fs, hang %.1fs)",
+                                total_s - absent_s, total_s, absent_s)
                     break                               # l'utilisateur a fini
             else:
                 wait_s += config.TARGET_HOP_S
@@ -145,9 +151,14 @@ class Orchestrator:
         if not started:
             return None
         pcm = np.concatenate(chunks)
+        # Retire le silence de fin (le hang) pour ne pas diluer le STT.
+        trail = int(max(0.0, absent_s - 0.3) * sr)
+        if trail and len(pcm) - trail >= config.CMD_MIN_SPEECH_S * sr:
+            pcm = pcm[:-trail]
         if len(pcm) < config.CMD_MIN_SPEECH_S * sr:
             logger.info("[endpoint] commande trop courte (%.1fs) → ignorée", len(pcm) / sr)
             return None
+        logger.info("[endpoint] commande capturée : %.1fs envoyés au cloud", len(pcm) / sr)
         return pcm
 
     # ── Le mot de réveil vient-il bien de l'utilisateur enrôlé ? ─────
