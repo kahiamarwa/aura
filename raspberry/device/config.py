@@ -46,9 +46,10 @@ WAKE_THRESHOLDS = {
     # stop_aura plus strict : il faux-déclenche sur la parole ambiante
     Path(INTERRUPT_MODEL).stem: float(os.getenv("INTERRUPT_THRESHOLD", "0.85")),
 }
-# Vérifier que le wake word vient bien de l'utilisateur enrôlé (anti faux-déclenchement
-# sur les voix des autres). Désactivable WAKE_SPEAKER_GATE=0.
-WAKE_SPEAKER_GATE = os.getenv("WAKE_SPEAKER_GATE", "1") == "1"
+# Gate vocal sur le wake word : OFF par défaut. La vérif ECAPA sur l'audio court
+# du wake word est trop instable (rejette le vrai utilisateur ~0.23). On répond à
+# tout le monde (comme Alexa) et on mise sur le traitement du bruit. WAKE_SPEAKER_GATE=1 pour réactiver.
+WAKE_SPEAKER_GATE = os.getenv("WAKE_SPEAKER_GATE", "0") == "1"
 WAKE_COOLDOWN_S = 1.5
 
 # ── Silero VAD (détection de parole robuste, modèle ONNX) ────────────
@@ -66,6 +67,10 @@ CMD_MAX_S = 12.0              # durée max d'une commande (cap de sécurité abs
 CMD_MIN_SPEECH_S = 0.3        # parole min pour considérer une vraie commande
 
 # ── Endpointing par LOCUTEUR CIBLE (robuste en milieu bruyant) ───────
+# OFF par défaut : ECAPA sur fenêtres courtes est trop instable (rate le vrai
+# utilisateur). On endpointe sur l'énergie/VAD (fiable) + traitement du bruit.
+# TARGET_ENDPOINTING=1 pour réactiver le suivi par locuteur.
+TARGET_ENDPOINTING = os.getenv("TARGET_ENDPOINTING", "0") == "1"
 # L'enceinte s'arrête quand TA voix s'arrête, en ignorant les autres voix.
 TARGET_WINDOW_S = 1.5          # fenêtre glissante pour décider "c'est lui ?"
 TARGET_HOP_S = 0.4            # cadence de décision (toutes les 0.4 s)

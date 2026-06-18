@@ -94,7 +94,7 @@ class Orchestrator:
         attente plus courte de la suite).
         """
         sr = config.SAMPLE_RATE
-        use_target = self.target.has_reference
+        use_target = self.target.has_reference and config.TARGET_ENDPOINTING
         wait_max = config.TARGET_WAIT_CONTINUE_S if continuation else config.TARGET_WAIT_START_S
         if not continuation:
             play_beep()
