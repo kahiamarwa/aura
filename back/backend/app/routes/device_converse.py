@@ -18,6 +18,8 @@ Auth : X-Device-Token (si configuré) + Authorization: Bearer <JWT user>.
 
 import json
 import logging
+import threading
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 import httpx
@@ -110,6 +112,42 @@ def _verify_speaker(user_token: str | None, wav_data: bytes) -> dict:
         return {"verified": True, "reason": "error"}
 
 
+DEVICE_CONV_TITLE = "🔊 Enceinte Aura"
+
+
+def _persist_device_conversation(user_token: str, user_text: str, assistant_text: str):
+    """Persiste la conversation de l'enceinte dans Supabase (fire-and-forget).
+
+    L'app/web peut alors l'afficher (en direct via realtime). Une seule
+    conversation « Enceinte » par utilisateur, qui accumule les échanges.
+    """
+    if not user_token:
+        return
+    try:
+        supabase = get_supabase_client(user_token)
+        user_id = get_user_id(supabase, user_token)
+        existing = (
+            supabase.table("conversations").select("id")
+            .eq("user_id", user_id).eq("title", DEVICE_CONV_TITLE).limit(1).execute()
+        )
+        if existing.data:
+            conv_id = existing.data[0]["id"]
+        else:
+            r = supabase.table("conversations").insert(
+                {"user_id": user_id, "title": DEVICE_CONV_TITLE}
+            ).execute()
+            conv_id = r.data[0]["id"]
+        supabase.table("conversation_messages").insert([
+            {"conversation_id": conv_id, "user_id": user_id, "role": "user", "content": user_text},
+            {"conversation_id": conv_id, "user_id": user_id, "role": "assistant", "content": assistant_text},
+        ]).execute()
+        supabase.table("conversations").update(
+            {"updated_at": datetime.now(timezone.utc).isoformat()}
+        ).eq("id", conv_id).execute()
+    except Exception as e:
+        logger.warning("[converse] persist conversation error: %s", e)
+
+
 @router.post("/api/device/converse")
 async def converse(
     raw_request: Request,
@@ -186,6 +224,13 @@ async def converse(
     logger.info("[converse] response=%r", response_text[:80])
     if not response_text:
         return JSONResponse({"status": "empty_response", "transcript": transcript})
+
+    # ── Persistance (fire-and-forget) : l'app/web pourra l'afficher ──
+    threading.Thread(
+        target=_persist_device_conversation,
+        args=(user_token, transcript, response_text),
+        daemon=True,
+    ).start()
 
     # ── 5. TTS → MP3 ────────────────────────────────────────────────
     headers = {
