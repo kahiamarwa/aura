@@ -91,17 +91,25 @@ def _refresh_access() -> str | None:
 
 
 def get_access_token() -> str | None:
-    """JWT courant, renouvelé tout seul si expiré. Plus jamais d'export manuel."""
-    global _access_exp
+    """JWT courant, renouvelé tout seul si expiré. Plus jamais d'export manuel.
+
+    Avec l'appairage, le device n'a PAS besoin de token utilisateur (le backend
+    résout via DEVICE_TOKEN). On abandonne donc un refresh token révoqué.
+    """
+    global _access_exp, _refresh_token
     with _tok_lock:
         if _access_token and time.time() < _access_exp:
             return _access_token       # cache valide → AUCUN appel réseau
         if _refresh_token:
             try:
                 return _refresh_access()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (400, 401, 403):
+                    logger.warning("[auth] refresh token révoqué → abandon (le device s'authentifie par son DEVICE_TOKEN)")
+                    _refresh_token = None          # on ne retente plus
+                _access_exp = time.time() + 300.0
             except Exception as e:
-                logger.warning("[auth] échec du refresh (JWT en cache en repli): %s", e)
-                # backoff : ne PAS re-tenter à chaque appel (sinon +200ms/appel)
+                logger.warning("[auth] échec du refresh: %s", e)
                 _access_exp = time.time() + 60.0
         return _access_token
 
