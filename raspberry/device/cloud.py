@@ -29,17 +29,34 @@ _access_exp = 0.0
 _refresh_token = config.REFRESH_TOKEN or None
 
 
+def _jwt_exp(token: str) -> float:
+    """Lit le champ exp d'un JWT (sans vérif signature) pour connaître sa validité."""
+    try:
+        import base64
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return float(json.loads(base64.urlsafe_b64decode(payload)).get("exp", 0))
+    except Exception:
+        return 0.0
+
+
 def _load_session():
     """Charge le dernier JWT/refresh persisté (survit aux redémarrages)."""
-    global _access_token, _refresh_token
+    global _access_token, _refresh_token, _access_exp
     try:
         if os.path.exists(config.TOKEN_FILE):
             with open(config.TOKEN_FILE) as f:
                 d = json.load(f)
-            _refresh_token = d.get("refresh_token") or _refresh_token
-            _access_token = d.get("access_token") or _access_token
+            # env (AURA_REFRESH_TOKEN) a priorité ; sinon le token rotaté du fichier
+            _refresh_token = _refresh_token or d.get("refresh_token")
+            _access_token = _access_token or d.get("access_token")
     except Exception:
         pass
+    # On connaît l'expiration du JWT en cache → on NE refresh PAS tant qu'il est valide
+    if _access_token:
+        exp = _jwt_exp(_access_token)
+        if exp:
+            _access_exp = exp - 120.0
 
 
 def _save_session():
@@ -75,14 +92,17 @@ def _refresh_access() -> str | None:
 
 def get_access_token() -> str | None:
     """JWT courant, renouvelé tout seul si expiré. Plus jamais d'export manuel."""
+    global _access_exp
     with _tok_lock:
         if _access_token and time.time() < _access_exp:
-            return _access_token
+            return _access_token       # cache valide → AUCUN appel réseau
         if _refresh_token:
             try:
                 return _refresh_access()
             except Exception as e:
-                logger.warning("[auth] échec du refresh (JWT statique en repli): %s", e)
+                logger.warning("[auth] échec du refresh (JWT en cache en repli): %s", e)
+                # backoff : ne PAS re-tenter à chaque appel (sinon +200ms/appel)
+                _access_exp = time.time() + 60.0
         return _access_token
 
 

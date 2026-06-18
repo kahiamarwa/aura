@@ -218,6 +218,7 @@ class Orchestrator:
     # ── THINKING : cloud (gated) → audio ou statut ───────────────────
     def _handle_command(self, pcm: np.ndarray, from_conversing: bool, frames) -> tuple[str, bool]:
         self._spoke = False
+        self.last_transcript = ""            # pas encore transcrit → ne pas montrer l'ancien
         self._set_state("THINKING")          # P2 : l'orbe passe au bleu PENDANT le cloud
         sr = config.SAMPLE_RATE
         full = pcm

@@ -279,15 +279,8 @@ async def device_state(
     try:
         supabase = get_supabase_client(user_token)
         user_id = get_user_id(supabase, user_token)
-        # Anti-désordre : ne pas écraser un état plus récent déjà enregistré.
-        if seq_i:
-            cur = (
-                supabase.table("device_status").select("seq")
-                .eq("user_id", user_id).limit(1).execute()
-            )
-            cur_seq = (cur.data[0].get("seq") or 0) if cur.data else 0
-            if cur_seq and seq_i < cur_seq:
-                return {"ok": True, "skipped": "stale"}
+        # L'ordre est déjà garanti côté device (push sérialisé) → upsert direct,
+        # AUCUN SELECT préalable (latence minimale). seq stocké pour info/ordre.
         supabase.table("device_status").upsert({
             "user_id": user_id,
             "state": state,
