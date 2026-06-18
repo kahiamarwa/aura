@@ -144,7 +144,7 @@ def push_state(state: str, transcript: str = "", seq: int = 0) -> None:
     Appelé par UN SEUL thread (sérialisé) → ordre garanti. seq monotone permet
     au backend de rejeter un état arrivé en retard (anti-désordre).
     """
-    if not get_access_token():
+    if not (config.DEVICE_TOKEN or get_access_token()):
         return
     try:
         _state_client.post(_url("/api/device/state"), headers=_headers(),

@@ -9,9 +9,16 @@ class Settings(BaseSettings):
     AURA_AGENT_TOKEN: str = ""
     SUPABASE_URL: str = ""
     SUPABASE_ANON_KEY: str = ""
+    # Clé service role (SERVEUR uniquement, jamais sur le device) : permet de
+    # résoudre device→utilisateur et d'agir pour l'utilisateur appairé.
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
     MISTRAL_API_KEY: str = ""
+
+    # Token présenté par les enceintes (devices headless) via X-Device-Token.
+    # Si défini, les routes /api/device/* l'exigent. Production : table devices.
+    DEVICE_TOKEN: str = ""
 
     class Config:
         env_file = ".env"

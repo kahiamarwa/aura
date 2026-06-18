@@ -35,6 +35,7 @@ from app.services import llm_service
 from app.services.tts_service import stream_tts
 from app.services.speaker_service import SpeakerService
 from app.services.supabase_client import get_supabase_client, get_user_id
+from app.routes.device_pairing import resolve_user_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -81,12 +82,12 @@ async def _is_complete(text: str) -> bool:
 
 
 def _check_device(request: Request) -> str | None:
-    settings = get_settings()
-    if settings.DEVICE_TOKEN:
-        if request.headers.get("x-device-token", "") != settings.DEVICE_TOKEN:
-            raise HTTPException(status_code=403, detail="Invalid device token")
-    auth = request.headers.get("authorization", "")
-    return auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else None
+    """Authentifie l'enceinte et renvoie le JWT de l'utilisateur APPAIRÉ.
+
+    Priorité : appairage (device_token → utilisateur via la table devices, le
+    device ne détient aucun credential). Repli rétrocompat : Authorization Bearer.
+    """
+    return resolve_user_token(request)
 
 
 def _verify_speaker(user_token: str | None, wav_data: bytes) -> dict:
