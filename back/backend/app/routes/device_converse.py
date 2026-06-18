@@ -34,7 +34,7 @@ from app.routes.intent_classifier import classify_intent
 from app.services import llm_service
 from app.services.tts_service import stream_tts
 from app.services.speaker_service import SpeakerService
-from app.services.supabase_client import get_supabase_client, get_user_id
+from app.services.supabase_client import get_supabase_client, get_user_id, get_service_client
 from app.routes.device_pairing import resolve_user_token
 
 logger = logging.getLogger(__name__)
@@ -150,6 +150,79 @@ def _persist_device_conversation(user_token: str, user_text: str, assistant_text
         logger.warning("[converse] persist conversation error: %s", e)
 
 
+def _uid_from_jwt(token: str) -> str | None:
+    try:
+        import base64
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload)).get("sub")
+    except Exception:
+        return None
+
+
+def _push_task(user_token: str | None, task: str | None):
+    """Pousse l'OUTIL en cours de l'agent dans device_status (animations front)."""
+    uid = _uid_from_jwt(user_token) if user_token else None
+    if not uid:
+        return
+    try:
+        get_service_client().table("device_status").upsert({
+            "user_id": uid,
+            "task": task,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+    except Exception as e:
+        logger.debug("[converse] push task error: %s", e)
+
+
+async def _run_agent(user_token, transcript, enriched, settings):
+    """Consomme le flux SSE de l'agent : accumule le texte, pousse l'outil en
+    cours (animation front), renvoie (response_text, attachments).
+
+    Fallback sur get_response si le stream échoue → ZÉRO régression.
+    """
+    response_text = ""
+    attachments = None
+    current_event = None
+    try:
+        async for line in llm_service.stream_response(
+            command=transcript, context=[],
+            agent_url=settings.AURA_AGENT_URL, agent_token=settings.AURA_AGENT_TOKEN,
+            user_token=user_token, enriched_context=enriched,
+        ):
+            line = line.rstrip("\n")
+            if line.startswith("event: "):
+                current_event = line[7:].strip()
+            elif line.startswith("data: "):
+                try:
+                    data = json.loads(line[6:])
+                except Exception:
+                    continue
+                if current_event == "text_delta":
+                    response_text += data.get("delta", "")
+                elif current_event == "tool_start":
+                    logger.info("[converse] outil agent : %s", data.get("name"))
+                    _push_task(user_token, data.get("name"))
+                elif current_event == "done":
+                    response_text = data.get("response") or response_text
+                    attachments = data.get("attachments")
+                elif current_event == "error":
+                    raise RuntimeError("agent stream error")
+        _push_task(user_token, None)
+        if response_text.strip():
+            return response_text, attachments
+        raise ValueError("empty stream")
+    except Exception as e:
+        logger.warning("[converse] stream agent KO (%s) → fallback get_response", e)
+        _push_task(user_token, None)
+        result = await llm_service.get_response(
+            command=transcript, context=[],
+            agent_url=settings.AURA_AGENT_URL, agent_token=settings.AURA_AGENT_TOKEN,
+            user_token=user_token, enriched_context=enriched,
+        )
+        return (result.get("text") or ""), result.get("attachments")
+
+
 @router.post("/api/device/converse")
 async def converse(
     raw_request: Request,
@@ -209,24 +282,18 @@ async def converse(
     # chemin nominal (accepté), son coût disparaît dans l'ombre du LLM.
     enriched = "\n".join(ambient_context) if ambient_context else None
     verify_task = asyncio.create_task(asyncio.to_thread(_verify_speaker, user_token, wav_data))
-    llm_task = asyncio.create_task(llm_service.get_response(
-        command=transcript,
-        context=[],
-        agent_url=settings.AURA_AGENT_URL,
-        agent_token=settings.AURA_AGENT_TOKEN,
-        user_token=user_token,
-        enriched_context=enriched,
-    ))
+    agent_task = asyncio.create_task(_run_agent(user_token, transcript, enriched, settings))
 
     verify = await verify_task
     rejected = not verify.get("verified", True) and verify.get("reason") != "no_enrollments"
     if rejected and settings.VERIFY_SPEAKER_ENFORCE:
         logger.info("[converse] speaker rejected (enforce): %s", verify)
-        llm_task.cancel()
+        agent_task.cancel()
         try:
-            await llm_task
+            await agent_task
         except BaseException:
             pass
+        _push_task(user_token, None)
         return JSONResponse({
             "status": "rejected",
             "transcript": transcript,
@@ -237,8 +304,8 @@ async def converse(
         logger.info("[converse] locuteur non reconnu (%s, %.2f) mais on répond (verif non bloquante)",
                     verify.get("speaker_name"), verify.get("score") or 0.0)
 
-    result = await llm_task
-    response_text = (result.get("text") or "").strip()
+    response_text, _attachments = await agent_task
+    response_text = (response_text or "").strip()
     logger.info("[converse] response=%r", response_text[:80])
     if not response_text:
         return JSONResponse({"status": "empty_response", "transcript": transcript})
