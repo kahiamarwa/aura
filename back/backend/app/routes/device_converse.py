@@ -16,6 +16,7 @@ Réponse :
 Auth : X-Device-Token (si configuré) + Authorization: Bearer <JWT user>.
 """
 
+import asyncio
 import json
 import logging
 import threading
@@ -202,10 +203,28 @@ async def converse(
             logger.info("[converse] not directed at Aura (conf=%.2f) → skip", intent.get("confidence", 0.0))
             return JSONResponse({"status": "not_directed", "transcript": transcript})
 
-    # ── 3. Speaker verification ─────────────────────────────────────
-    verify = _verify_speaker(user_token, wav_data)
+    # ── 3+4. Speaker verify ∥ LLM EN PARALLÈLE (latence) ────────────
+    # La vérif locuteur (réseau + ONNX) tourne EN MÊME TEMPS que le LLM. Sur le
+    # chemin nominal (accepté), son coût disparaît dans l'ombre du LLM.
+    enriched = "\n".join(ambient_context) if ambient_context else None
+    verify_task = asyncio.create_task(asyncio.to_thread(_verify_speaker, user_token, wav_data))
+    llm_task = asyncio.create_task(llm_service.get_response(
+        command=transcript,
+        context=[],
+        agent_url=settings.AURA_AGENT_URL,
+        agent_token=settings.AURA_AGENT_TOKEN,
+        user_token=user_token,
+        enriched_context=enriched,
+    ))
+
+    verify = await verify_task
     if not verify.get("verified", True) and verify.get("reason") != "no_enrollments":
         logger.info("[converse] speaker rejected: %s", verify)
+        llm_task.cancel()
+        try:
+            await llm_task
+        except BaseException:
+            pass
         return JSONResponse({
             "status": "rejected",
             "transcript": transcript,
@@ -213,16 +232,7 @@ async def converse(
             "score": verify.get("score"),
         })
 
-    # ── 4. Agent LLM (avec contexte ambiant) ────────────────────────
-    enriched = "\n".join(ambient_context) if ambient_context else None
-    result = await llm_service.get_response(
-        command=transcript,
-        context=[],
-        agent_url=settings.AURA_AGENT_URL,
-        agent_token=settings.AURA_AGENT_TOKEN,
-        user_token=user_token,
-        enriched_context=enriched,
-    )
+    result = await llm_task
     response_text = (result.get("text") or "").strip()
     logger.info("[converse] response=%r", response_text[:80])
     if not response_text:
@@ -255,20 +265,34 @@ async def device_state(
     raw_request: Request,
     state: str = Form(...),
     transcript: str = Form(""),
+    seq: str = Form("0"),
 ):
     """Reçoit l'état courant de l'enceinte (IDLE/LISTENING/THINKING/SPEAKING…)
     et l'écrit dans Supabase pour l'affichage EN DIRECT côté app/web.
+
+    seq monotone : on ignore un état arrivé EN RETARD (anti-désordre réseau).
     """
     user_token = _check_device(raw_request)
     if not user_token:
         return {"ok": False, "reason": "no_token"}
+    seq_i = int(seq) if seq.isdigit() else 0
     try:
         supabase = get_supabase_client(user_token)
         user_id = get_user_id(supabase, user_token)
+        # Anti-désordre : ne pas écraser un état plus récent déjà enregistré.
+        if seq_i:
+            cur = (
+                supabase.table("device_status").select("seq")
+                .eq("user_id", user_id).limit(1).execute()
+            )
+            cur_seq = (cur.data[0].get("seq") or 0) if cur.data else 0
+            if cur_seq and seq_i < cur_seq:
+                return {"ok": True, "skipped": "stale"}
         supabase.table("device_status").upsert({
             "user_id": user_id,
             "state": state,
             "transcript": transcript or None,
+            "seq": seq_i,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
         return {"ok": True}

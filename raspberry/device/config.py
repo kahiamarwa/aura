@@ -87,6 +87,10 @@ SEMANTIC_MAX_CHECKS = 3        # nb max de vérifications de complétude par com
 SEMANTIC_MAX_S = 15.0          # au-delà → on traite (cap de sécurité)
 TARGET_WAIT_CONTINUE_S = 3.0   # délai d'attente de la suite après une pause de réflexion
 
+# ── Gardes anti-boucle (le device revient TOUJOURS à IDLE) ───────────
+MAX_WASTED = int(os.getenv("MAX_WASTED", "2"))        # cycles sans réponse → IDLE
+MAX_CONV_TURNS = int(os.getenv("MAX_CONV_TURNS", "8"))  # tours max en conversation → IDLE
+
 # ── Conversation continue (parité web) ───────────────────────────────
 CONVERSATION_WINDOW_S = 12.0   # fenêtre pour répondre sans wake word (conversing)
 CONVERSING_RMS = float(os.getenv("CONVERSING_RMS", "350"))   # seuil parole en conversing

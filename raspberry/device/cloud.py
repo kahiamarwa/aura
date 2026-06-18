@@ -113,17 +113,22 @@ def _url(path: str) -> str:
     return config.CLOUD_BACKEND_URL.rstrip("/") + path
 
 
-def push_state(state: str, transcript: str = "") -> None:
-    """Pousse l'état courant du device vers le cloud (pour l'affichage live web).
+# Client persistant (keep-alive) pour les pushs d'état — évite un handshake TLS
+# à chaque transition, timeout court pour ne jamais retarder le pipeline.
+_state_client = httpx.Client(timeout=httpx.Timeout(connect=2.0, read=2.0, write=2.0, pool=2.0))
 
-    Fire-and-forget : on n'attend pas, on ne bloque jamais l'orchestrateur.
+
+def push_state(state: str, transcript: str = "", seq: int = 0) -> None:
+    """Pousse l'état courant du device vers le cloud (affichage live front).
+
+    Appelé par UN SEUL thread (sérialisé) → ordre garanti. seq monotone permet
+    au backend de rejeter un état arrivé en retard (anti-désordre).
     """
     if not get_access_token():
         return
     try:
-        with httpx.Client(timeout=httpx.Timeout(3.0)) as client:
-            client.post(_url("/api/device/state"), headers=_headers(),
-                        data={"state": state, "transcript": transcript})
+        _state_client.post(_url("/api/device/state"), headers=_headers(),
+                           data={"state": state, "transcript": transcript, "seq": str(seq)})
     except Exception:
         pass
 
@@ -146,7 +151,9 @@ def converse(command_pcm: np.ndarray, from_conversing: bool, context: list[str],
     """
     import json
     wav = pcm_to_wav_bytes(command_pcm)
-    client = httpx.Client(timeout=httpx.Timeout(60.0))
+    # Timeouts granulaires : borne l'inactivité réseau (~15s) au lieu d'un global
+    # 60s qui laisserait THINKING/SPEAKING figés si le backend stalle (P7).
+    client = httpx.Client(timeout=httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0))
     cm = client.stream(
         "POST",
         _url("/api/device/converse"),

@@ -72,9 +72,20 @@ class MicStream:
         self._stream.close()
 
     def frames(self):
-        """Générateur infini de frames int16 16 kHz (np.ndarray de FRAME_SAMPLES)."""
+        """Générateur infini de frames int16 16 kHz (np.ndarray de FRAME_SAMPLES).
+
+        Watchdog : si le micro ne fournit plus rien (USB débranché), on log un
+        warning au lieu de bloquer SILENCIEUSEMENT pour toujours sur get().
+        """
+        empties = 0
         while True:
-            raw = self._q.get()
+            try:
+                raw = self._q.get(timeout=5.0)
+            except queue.Empty:
+                empties += 1
+                logger.warning("[mic] aucun audio depuis %ds — micro déconnecté ?", 5 * empties)
+                continue
+            empties = 0
             frame = np.frombuffer(raw, dtype=np.int16)
             if self._native_rate != config.SAMPLE_RATE:
                 g = gcd(config.SAMPLE_RATE, self._native_rate)
@@ -180,8 +191,16 @@ class Player:
             self._proc = None
 
     def stop(self):
-        if self._proc and self._proc.poll() is None:
-            self._proc.terminate()
+        p = self._proc
+        if p and p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(timeout=1.0)          # reaper (évite les zombies defunct)
+            except Exception:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
         self._proc = None
 
     @property
