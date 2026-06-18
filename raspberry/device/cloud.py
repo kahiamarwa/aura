@@ -179,9 +179,10 @@ def converse(command_pcm: np.ndarray, from_conversing: bool, context: list[str],
     """
     import json
     wav = pcm_to_wav_bytes(command_pcm)
-    # Timeouts granulaires : borne l'inactivité réseau (~15s) au lieu d'un global
-    # 60s qui laisserait THINKING/SPEAKING figés si le backend stalle (P7).
-    client = httpx.Client(timeout=httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0))
+    # Timeouts granulaires. read=180s : générer un rapport/présentation peut
+    # prendre 30s+ (l'agent ne renvoie l'audio qu'à la fin) → ne PAS couper avant.
+    # Le front montre la progression (animation d'outil) pendant ce temps.
+    client = httpx.Client(timeout=httpx.Timeout(connect=5.0, read=180.0, write=10.0, pool=5.0))
     cm = client.stream(
         "POST",
         _url("/api/device/converse"),

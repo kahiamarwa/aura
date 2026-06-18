@@ -181,10 +181,44 @@ def _push_status(user_token: str | None, **fields):
         logger.debug("[converse] push status error: %s", e)
 
 
-async def _run_agent(user_token, transcript, enriched, settings):
+_conv_id_cache: dict[str, str] = {}
+
+
+def _get_device_conv_id(user_token: str | None) -> str | None:
+    """conversation_id de l'enceinte (find-or-create) → continuité de l'agent.
+
+    L'agent charge l'historique par conversation_id : sans ça, il ne se souvient
+    pas des tours précédents (« je n'ai pas de rapport précédent »).
+    """
+    uid = _uid_from_jwt(user_token) if user_token else None
+    if not uid:
+        return None
+    if uid in _conv_id_cache:
+        return _conv_id_cache[uid]
+    try:
+        supabase = get_supabase_client(user_token)
+        user_id = get_user_id(supabase, user_token)
+        existing = (
+            supabase.table("conversations").select("id")
+            .eq("user_id", user_id).eq("title", DEVICE_CONV_TITLE).limit(1).execute()
+        )
+        conv_id = (
+            existing.data[0]["id"] if existing.data
+            else supabase.table("conversations").insert(
+                {"user_id": user_id, "title": DEVICE_CONV_TITLE}).execute().data[0]["id"]
+        )
+        _conv_id_cache[uid] = conv_id
+        return conv_id
+    except Exception as e:
+        logger.warning("[converse] get conv id error: %s", e)
+        return None
+
+
+async def _run_agent(user_token, transcript, enriched, settings, conv_id=None):
     """Consomme le flux SSE de l'agent : STREAME le texte + pousse l'outil en
     cours (animations front), renvoie (response_text, attachments).
 
+    conv_id : continuité (l'agent charge l'historique).
     Fallback sur get_response si le stream échoue → ZÉRO régression.
     """
     response_text = ""
@@ -195,7 +229,7 @@ async def _run_agent(user_token, transcript, enriched, settings):
         async for line in llm_service.stream_response(
             command=transcript, context=[],
             agent_url=settings.AURA_AGENT_URL, agent_token=settings.AURA_AGENT_TOKEN,
-            user_token=user_token, enriched_context=enriched,
+            user_token=user_token, enriched_context=enriched, conversation_id=conv_id,
         ):
             line = line.rstrip("\n")
             if line.startswith("event: "):
@@ -229,7 +263,7 @@ async def _run_agent(user_token, transcript, enriched, settings):
         result = await llm_service.get_response(
             command=transcript, context=[],
             agent_url=settings.AURA_AGENT_URL, agent_token=settings.AURA_AGENT_TOKEN,
-            user_token=user_token, enriched_context=enriched,
+            user_token=user_token, enriched_context=enriched, conversation_id=conv_id,
         )
         return (result.get("text") or ""), result.get("attachments")
 
@@ -292,8 +326,9 @@ async def converse(
     # La vérif locuteur (réseau + ONNX) tourne EN MÊME TEMPS que le LLM. Sur le
     # chemin nominal (accepté), son coût disparaît dans l'ombre du LLM.
     enriched = "\n".join(ambient_context) if ambient_context else None
+    conv_id = await asyncio.to_thread(_get_device_conv_id, user_token)  # continuité agent
     verify_task = asyncio.create_task(asyncio.to_thread(_verify_speaker, user_token, wav_data))
-    agent_task = asyncio.create_task(_run_agent(user_token, transcript, enriched, settings))
+    agent_task = asyncio.create_task(_run_agent(user_token, transcript, enriched, settings, conv_id))
 
     verify = await verify_task
     rejected = not verify.get("verified", True) and verify.get("reason") != "no_enrollments"
