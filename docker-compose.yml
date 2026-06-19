@@ -1,20 +1,23 @@
 services:
   backend:
-    build: ./raspberry/backend
+    build: ./backend
     container_name: aura-backend
+    # Reaper PID 1 : tue les process défunts (ffmpeg, etc.) — évite les zombies
+    # qui bloquent l'arrêt du conteneur au redéploiement.
+    init: true
     env_file:
-      - ./raspberry/backend/.env
+      - ./backend/.env
     environment:
-      - CORS_ORIGINS=https://aura.hallia.ai,https://backend-aura.hallia.ai
+      - CORS_ORIGINS=https://aura.hallia.ai,https://backend-aura.hallia.ai,http://localhost:3000,http://localhost:3001,http://localhost:3002
       - PYTHONIOENCODING=utf-8
       - PYTHONUNBUFFERED=1
     ports:
       - "8001:8000"
     volumes:
-      - ./raspberry/openwake:/openwake:ro
+      - ./openwake:/openwake:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/stt-token')"]
       interval: 30s
       timeout: 10s
       retries: 3
