@@ -36,6 +36,17 @@ function sseEvent(controller: ReadableStreamDefaultController, event: string, da
   controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
 }
 
+// Rappel de mode appendé au DERNIER message user (juste avant la génération).
+// Contre le "format priming" : l'historique peut contenir des réponses riches
+// (tapées en chat) qui pousseraient l'agent à répondre richement même en voix.
+function modeReminder(outputMode: string): string {
+  if (outputMode === "chat") return "";
+  return "\n\n[MODE VOIX — IMPÉRATIF : ta réponse est LUE à voix haute. Réponds en 2-3 phrases COURTES," +
+    " français parlé, AUCUN markdown/liste/titre/gras ni URL lue. Même si des réponses précédentes de" +
+    " l'historique sont longues et riches (elles ont été tapées en mode chat), n'imite PAS leur format." +
+    " Exécute quand même les actions ; les fichiers et la section « Sources » s'affichent dans le chat (non lus).]";
+}
+
 // ═══════════════════════════════════════════════════════════════
 // TOOL EXECUTOR (shared between streaming and non-streaming)
 // ═══════════════════════════════════════════════════════════════
@@ -294,6 +305,7 @@ async function agentLoopStreaming(
   userJwt: string,
   userContext?: string,
   conversationId?: string,
+  outputMode: string = "voice",
 ) {
   const MAX_TURNS = 5;
   const toolsUsed: string[] = [];
@@ -332,9 +344,12 @@ async function agentLoopStreaming(
     }
   }
 
-  const fullUserMessage = userContext
+  const baseUserMessage = userContext
     ? `${userMessage}\n\n--- CONTEXT FOURNI ---\n${userContext}`
     : userMessage;
+  // Rappel de mode JUSTE avant la génération : bat le "format priming" de
+  // l'historique (des réponses précédentes peuvent être riches/tapées en chat).
+  const fullUserMessage = baseUserMessage + modeReminder(outputMode);
   messages.push({ role: "user", content: fullUserMessage });
 
   let fullResponseText = "";
@@ -353,7 +368,7 @@ async function agentLoopStreaming(
         model: "claude-sonnet-4-6",
         max_tokens: 16384,
         stream: true,
-        system: buildSystemPrompt(),
+        system: buildSystemPrompt(outputMode),
         messages,
         tools: AGENT_TOOLS,
       }),
@@ -477,7 +492,8 @@ async function agentLoop(
   userId: string,
   userJwt: string,
   userContext?: string,
-  conversationId?: string
+  conversationId?: string,
+  outputMode: string = "voice",
 ): Promise<AgentResult> {
   const MAX_TURNS = 5;
   const toolsUsed: string[] = [];
@@ -516,9 +532,9 @@ async function agentLoop(
     }
   }
 
-  const fullUserMessage = userContext
+  const fullUserMessage = (userContext
     ? `${userMessage}\n\n--- CONTEXT FOURNI ---\n${userContext}`
-    : userMessage;
+    : userMessage) + modeReminder(outputMode);
   messages.push({ role: "user", content: fullUserMessage });
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -534,7 +550,7 @@ async function agentLoop(
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
         max_tokens: 16384,
-        system: buildSystemPrompt(),
+        system: buildSystemPrompt(outputMode),
         messages,
         tools: AGENT_TOOLS,
       }),
@@ -628,7 +644,9 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { message, context, conversation_id, stream: wantStream } = body;
+    const { message, context, conversation_id, stream: wantStream, output_mode } = body;
+    // 'voice' (enceinte/TTS : concis, parlé) ou 'chat' (web : riche, markdown). Défaut voice.
+    const outputMode = output_mode === "chat" ? "chat" : "voice";
 
     if (!message || typeof message !== "string" || message.trim().length === 0) {
       return new Response(
@@ -672,6 +690,7 @@ Deno.serve(async (req: Request) => {
             userJwt,
             userContext,
             convId,
+            outputMode,
           ).catch((error) => {
             console.error("[aura-agent] Streaming error:", error);
             try {
@@ -698,7 +717,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── NON-STREAMING MODE (backward compatible) ──
-    const result = await agentLoop(message.trim(), supabase, userId, userJwt, userContext, convId);
+    const result = await agentLoop(message.trim(), supabase, userId, userJwt, userContext, convId, outputMode);
     console.log(`[aura-agent] Terminé. Outils: [${result.tools_used.join(", ")}]`);
 
     return new Response(JSON.stringify(result), {
