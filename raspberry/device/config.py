@@ -11,6 +11,30 @@ Variables provisionnées à l'appairage (pas bakées en usine) :
 import os
 from pathlib import Path
 
+
+def _load_env_file():
+    """Charge un fichier d'env persistant (provisionné à l'installation) pour ne
+    PAS avoir à exporter les variables à chaque démarrage du Pi.
+
+    Cherche ~/.aura/env puis device/.env. Format : KEY=VALUE (une par ligne).
+    Les variables déjà exportées dans le shell ont priorité (setdefault).
+    """
+    for p in (os.path.expanduser("~/.aura/env"), str(Path(__file__).resolve().parent / ".env")):
+        try:
+            with open(p) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+
+
+_load_env_file()
+
 # ── Cloud ────────────────────────────────────────────────────────────
 CLOUD_BACKEND_URL = os.getenv("CLOUD_BACKEND_URL", "http://localhost:8000")
 DEVICE_TOKEN = os.getenv("DEVICE_TOKEN", "")
