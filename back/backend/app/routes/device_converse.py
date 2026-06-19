@@ -267,7 +267,7 @@ async def _resolve_conversation(user_token: str | None, transcript: str) -> str 
     return await asyncio.to_thread(_create_conversation, user_token, title)
 
 
-async def _run_agent(user_token, transcript, enriched, settings, conv_id=None):
+async def _run_agent(user_token, transcript, enriched, settings, conv_id=None, output_mode="voice"):
     """Consomme le flux SSE de l'agent : STREAME le texte + pousse l'outil en
     cours (animations front), renvoie (response_text, attachments).
 
@@ -282,6 +282,7 @@ async def _run_agent(user_token, transcript, enriched, settings, conv_id=None):
             command=transcript, context=[],
             agent_url=settings.AURA_AGENT_URL, agent_token=settings.AURA_AGENT_TOKEN,
             user_token=user_token, enriched_context=enriched, conversation_id=conv_id,
+            output_mode=output_mode,
         ):
             line = line.rstrip("\n")
             if line.startswith("event: "):
@@ -312,6 +313,7 @@ async def _run_agent(user_token, transcript, enriched, settings, conv_id=None):
             command=transcript, context=[],
             agent_url=settings.AURA_AGENT_URL, agent_token=settings.AURA_AGENT_TOKEN,
             user_token=user_token, enriched_context=enriched, conversation_id=conv_id,
+            output_mode=output_mode,
         )
         return (result.get("text") or ""), result.get("attachments")
 
@@ -474,7 +476,8 @@ async def web_chat(raw_request: Request):
 
     memories = await asyncio.to_thread(memory_service.retrieve, user_token, message)
     enriched = memories or None
-    response_text, attachments = await _run_agent(user_token, message, enriched, settings, conv_id)
+    response_text, attachments = await _run_agent(
+        user_token, message, enriched, settings, conv_id, output_mode="chat")
     response_text = (response_text or "").strip()
     if response_text:
         threading.Thread(

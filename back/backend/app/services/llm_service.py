@@ -35,6 +35,7 @@ async def get_response(
     user_token: str | None = None,
     enriched_context: str | None = None,
     conversation_id: str | None = None,
+    output_mode: str = "voice",
 ) -> dict:
     context_string = enriched_context if enriched_context else _build_context_string(context)
 
@@ -46,6 +47,7 @@ async def get_response(
     body: dict[str, str | None] = {
         "message": command,
         "context": context_string,
+        "output_mode": output_mode,
     }
     if conversation_id:
         body["conversation_id"] = conversation_id
@@ -73,6 +75,7 @@ async def stream_response(
     user_token: str | None = None,
     enriched_context: str | None = None,
     conversation_id: str | None = None,
+    output_mode: str = "voice",
 ) -> AsyncGenerator[str, None]:
     """Proxy streaming SSE from aura-agent edge function."""
     context_string = enriched_context if enriched_context else _build_context_string(context)
@@ -86,6 +89,7 @@ async def stream_response(
         "message": command,
         "context": context_string,
         "stream": True,
+        "output_mode": output_mode,
     }
     if conversation_id:
         body["conversation_id"] = conversation_id
