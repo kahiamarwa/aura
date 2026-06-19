@@ -71,6 +71,16 @@ class MicStream:
         self._stream.stop()
         self._stream.close()
 
+    def flush(self):
+        """Vide le backlog audio accumulé pendant un traitement long (ex: appel
+        cloud en THINKING). SANS ça, le barge-in « Stop Aura » traite des frames
+        PÉRIMÉES → détecté en retard (après qu'Aura ait fini de parler)."""
+        try:
+            while True:
+                self._q.get_nowait()
+        except queue.Empty:
+            pass
+
     def frames(self):
         """Générateur infini de frames int16 16 kHz (np.ndarray de FRAME_SAMPLES).
 

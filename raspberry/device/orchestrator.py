@@ -298,6 +298,10 @@ class Orchestrator:
         """
         self._set_state("SPEAKING")
         self.ambient.set_enabled(False)
+        # Vide le backlog micro accumulé pendant THINKING → le barge-in « Stop Aura »
+        # est détecté EN TEMPS RÉEL (sur l'audio frais), pas avec du retard.
+        if getattr(self, "mic", None):
+            self.mic.flush()
         stop = threading.Event()
         self.player.start_stream()
         if not self.player.is_playing:        # mpg123 absent → ne pas drainer 10s pour rien
@@ -365,6 +369,8 @@ class Orchestrator:
         """Retourne (next_state, from_conversing). Timeout → ('IDLE', False)."""
         logger.info("[state] CONVERSING — répondez (ou « Dis Aura »), %.0fs", config.CONVERSATION_WINDOW_S)
         self.ambient.set_enabled(False)
+        if getattr(self, "mic", None):
+            self.mic.flush()   # audio frais (pas le backlog du THINKING)
         deadline = time.time() + config.CONVERSATION_WINDOW_S
         # Follow-up sans wake word UNIQUEMENT si la VOIX de l'utilisateur est
         # détectée (locuteur cible). Sinon → seul « Dis Aura » ré-engage.
@@ -404,6 +410,7 @@ class Orchestrator:
         threading.Thread(target=self._state_pusher, daemon=True).start()  # états → front (ordre garanti)
         logger.info("Aura prêt. Dites « Dis Aura ».")
         with MicStream() as mic:
+            self.mic = mic
             frames = mic.frames()
             self._set_state("IDLE")
             from_conversing = False
