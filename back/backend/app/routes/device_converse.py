@@ -316,6 +316,13 @@ async def _run_agent(user_token, transcript, enriched, settings, conv_id=None):
         return (result.get("text") or ""), result.get("attachments")
 
 
+def _strip_sources(text: str) -> str:
+    """Retire la section « Sources » (liens) — pour la VOIX (TTS) uniquement.
+    Le chat garde la version complète avec les liens cliquables."""
+    import re
+    return re.split(r"\n\s*\**\s*Sources\s*:", text, maxsplit=1, flags=re.IGNORECASE)[0].rstrip()
+
+
 @router.post("/api/device/converse")
 async def converse(
     raw_request: Request,
@@ -433,8 +440,10 @@ async def converse(
         "X-Speaker": quote(verify.get("speaker_name") or ""),
         "Access-Control-Expose-Headers": "X-Status, X-Transcript, X-Response, X-Speaker",
     }
+    # La voix ne lit PAS la section « Sources » (liens) — affichée dans le chat seulement.
+    voice_text = _strip_sources(response_text)
     return StreamingResponse(
-        stream_tts(text=response_text, voice_id=settings.ELEVENLABS_VOICE_ID, api_key=settings.ELEVENLABS_API_KEY),
+        stream_tts(text=voice_text, voice_id=settings.ELEVENLABS_VOICE_ID, api_key=settings.ELEVENLABS_API_KEY),
         media_type="audio/mpeg",
         headers=headers,
     )
