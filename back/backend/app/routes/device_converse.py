@@ -420,6 +420,42 @@ async def converse(
     )
 
 
+@router.post("/api/web/chat")
+async def web_chat(raw_request: Request):
+    """Chat web/mobile (sans enceinte) : écrire un message dans une conversation.
+
+    Même cerveau que l'enceinte : segmentation par sujet, RAG (mémoire), agent
+    avec continuité (conversation_id), persistance → realtime. Auth = JWT user.
+    Body: { message, conversation_id? }
+    """
+    auth = raw_request.headers.get("authorization", "")
+    user_token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else None
+    if not user_token:
+        raise HTTPException(status_code=401, detail="login required")
+    body = await raw_request.json()
+    message = (body.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message required")
+    settings = get_settings()
+
+    # conversation cible : fournie (vue web) ou résolue intelligemment (sujet)
+    conv_id = body.get("conversation_id") or await _resolve_conversation(user_token, message)
+    # commande utilisateur persistée tout de suite (s'affiche en realtime)
+    threading.Thread(target=_persist_msg, args=(user_token, conv_id, "user", message), daemon=True).start()
+
+    memories = await asyncio.to_thread(memory_service.retrieve, user_token, message)
+    enriched = memories or None
+    response_text, attachments = await _run_agent(user_token, message, enriched, settings, conv_id)
+    response_text = (response_text or "").strip()
+    if response_text:
+        threading.Thread(
+            target=_persist_msg,
+            args=(user_token, conv_id, "assistant", response_text, attachments),
+            daemon=True,
+        ).start()
+    return {"response": response_text, "attachments": attachments, "conversation_id": conv_id}
+
+
 @router.post("/api/device/state")
 async def device_state(
     raw_request: Request,
