@@ -117,45 +117,27 @@ def _verify_speaker(user_token: str | None, wav_data: bytes) -> dict:
 DEVICE_CONV_TITLE = "🔊 Enceinte Aura"
 
 
-def _persist_device_conversation(user_token: str, user_text: str, assistant_text: str, attachments=None):
-    """Persiste la conversation de l'enceinte dans Supabase (fire-and-forget).
+def _persist_msg(user_token: str, conv_id: str, role: str, content: str, attachments=None):
+    """Persiste UN message (commande ou réponse) dans conversation_messages.
 
-    L'app/web peut alors l'afficher (en direct via realtime), AVEC les pièces
-    jointes (rapport PDF, présentation…). Une conversation « Enceinte » par user.
+    Source UNIQUE du chat affiché : la commande est persistée dès le STT (elle
+    apparaît tout de suite), la réponse à la fin. Pas d'entrée 'live' qui
+    apparaît/disparaît → zéro scintillement, zéro trou.
     """
-    if not user_token:
+    if not user_token or not conv_id or not content:
         return
     try:
         supabase = get_supabase_client(user_token)
         user_id = get_user_id(supabase, user_token)
-        existing = (
-            supabase.table("conversations").select("id")
-            .eq("user_id", user_id).eq("title", DEVICE_CONV_TITLE).limit(1).execute()
-        )
-        if existing.data:
-            conv_id = existing.data[0]["id"]
-        else:
-            r = supabase.table("conversations").insert(
-                {"user_id": user_id, "title": DEVICE_CONV_TITLE}
-            ).execute()
-            conv_id = r.data[0]["id"]
-        assistant_msg = {
-            "conversation_id": conv_id, "user_id": user_id,
-            "role": "assistant", "content": assistant_text,
-        }
-        if attachments:
-            assistant_msg["attachments"] = attachments
-        supabase.table("conversation_messages").insert([
-            {"conversation_id": conv_id, "user_id": user_id, "role": "user", "content": user_text},
-            assistant_msg,
-        ]).execute()
+        msg = {"conversation_id": conv_id, "user_id": user_id, "role": role, "content": content}
+        if attachments and role == "assistant":
+            msg["attachments"] = attachments
+        supabase.table("conversation_messages").insert(msg).execute()
         supabase.table("conversations").update(
             {"updated_at": datetime.now(timezone.utc).isoformat()}
         ).eq("id", conv_id).execute()
-        # nettoie l'état live (la version persistée prend le relais)
-        _push_status(user_token, response=None, task=None, speaker=None, verified=None)
     except Exception as e:
-        logger.warning("[converse] persist conversation error: %s", e)
+        logger.warning("[converse] persist msg (%s) error: %s", role, e)
 
 
 def _uid_from_jwt(token: str) -> str | None:
@@ -224,7 +206,6 @@ async def _run_agent(user_token, transcript, enriched, settings, conv_id=None):
     response_text = ""
     attachments = None
     current_event = None
-    last_pushed = 0
     try:
         async for line in llm_service.stream_response(
             command=transcript, context=[],
@@ -241,10 +222,6 @@ async def _run_agent(user_token, transcript, enriched, settings, conv_id=None):
                     continue
                 if current_event == "text_delta":
                     response_text += data.get("delta", "")
-                    # push périodique → le front voit le texte APPARAÎTRE (anti-latence perçue)
-                    if len(response_text) - last_pushed >= 40 or response_text.endswith((".", "!", "?", ":", "\n")):
-                        _push_status(user_token, response=response_text, task=None)
-                        last_pushed = len(response_text)
                 elif current_event == "tool_start":
                     logger.info("[converse] outil agent : %s", data.get("name"))
                     _push_status(user_token, task=data.get("name"))
@@ -327,6 +304,8 @@ async def converse(
     # chemin nominal (accepté), son coût disparaît dans l'ombre du LLM.
     enriched = "\n".join(ambient_context) if ambient_context else None
     conv_id = await asyncio.to_thread(_get_device_conv_id, user_token)  # continuité agent
+    # Persiste la COMMANDE TOUT DE SUITE → elle s'affiche instantanément (source unique)
+    threading.Thread(target=_persist_msg, args=(user_token, conv_id, "user", transcript), daemon=True).start()
     verify_task = asyncio.create_task(asyncio.to_thread(_verify_speaker, user_token, wav_data))
     agent_task = asyncio.create_task(_run_agent(user_token, transcript, enriched, settings, conv_id))
 
@@ -358,13 +337,14 @@ async def converse(
     response_text, attachments = await agent_task
     response_text = (response_text or "").strip()
     logger.info("[converse] response=%r attachments=%s", response_text[:80], bool(attachments))
+    _push_status(user_token, task=None)   # fin de l'agent → efface l'animation d'outil
     if not response_text:
         return JSONResponse({"status": "empty_response", "transcript": transcript})
 
-    # ── Persistance (fire-and-forget) : l'app/web pourra l'afficher ──
+    # ── Persiste la RÉPONSE (source unique) → s'affiche et RESTE ────
     threading.Thread(
-        target=_persist_device_conversation,
-        args=(user_token, transcript, response_text, attachments),
+        target=_persist_msg,
+        args=(user_token, conv_id, "assistant", response_text, attachments),
         daemon=True,
     ).start()
 
