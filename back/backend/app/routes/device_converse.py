@@ -419,6 +419,43 @@ def _persist_ambient(user_token: str, text: str):
         logger.warning("[device] ambient persist error: %s", e)
 
 
+def _persist_ambient_memory(user_token: str, text: str):
+    """Accumule l'ambiant dans une TRANSCRIPTION JOURNALIÈRE (1 ligne/jour/user).
+
+    C'est la table que l'agent interroge (get_recent_context / search_memory) →
+    Aura peut alors résumer « mes réunions d'hier » : elle retrouve la ligne du
+    jour par date et la résume. Sans ça, l'ambiant restait éphémère.
+    """
+    if not user_token or not text:
+        return
+    try:
+        supabase = get_supabase_client(user_token)
+        user_id = get_user_id(supabase, user_token)
+        today = datetime.now(timezone.utc).date().isoformat()
+        marker = f"ambient-{today}"   # 1 transcription par jour, repérée par ce nom
+        existing = (
+            supabase.table("transcriptions").select("id, transcription_text")
+            .eq("user_id", user_id).eq("audio_filename", marker).limit(1).execute()
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        if existing.data:
+            prev = existing.data[0].get("transcription_text") or ""
+            new_text = (prev + "\n" + text)[-60000:]   # cap (garde la fin)
+            supabase.table("transcriptions").update(
+                {"transcription_text": new_text, "updated_at": now}
+            ).eq("id", existing.data[0]["id"]).execute()
+        else:
+            supabase.table("transcriptions").insert({
+                "user_id": user_id,
+                "audio_filename": marker,
+                "language": "fr",
+                "transcription_text": text,
+                "summary": {"title": f"Contexte ambiant du {today}"},
+            }).execute()
+    except Exception as e:
+        logger.warning("[device] ambient memory persist error: %s", e)
+
+
 @router.post("/api/device/transcribe")
 async def transcribe(raw_request: Request, audio: UploadFile = File(...)):
     """Transcription simple pour le contexte ambiant (batch passif du device)."""
@@ -432,7 +469,9 @@ async def transcribe(raw_request: Request, audio: UploadFile = File(...)):
     wav_data = raw if raw[:4] == b"RIFF" else pcm_to_wav(raw, sample_rate=16000)
     text = (await transcribe_audio(settings.MISTRAL_API_KEY, wav_data) or "").strip()
     if text and user_token:
+        # 1) affichage live (12 derniers) + 2) mémoire interrogeable par l'agent
         threading.Thread(target=_persist_ambient, args=(user_token, text), daemon=True).start()
+        threading.Thread(target=_persist_ambient_memory, args=(user_token, text), daemon=True).start()
     return {"text": text}
 
 
