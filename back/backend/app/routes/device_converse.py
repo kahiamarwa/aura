@@ -35,6 +35,7 @@ from app.services import llm_service
 from app.services.tts_service import stream_tts
 from app.services.speaker_service import SpeakerService
 from app.services.supabase_client import get_supabase_client, get_user_id, get_service_client
+from app.services import memory_service
 from app.routes.device_pairing import resolve_user_token
 
 logger = logging.getLogger(__name__)
@@ -302,11 +303,17 @@ async def converse(
     # ── 3+4. Speaker verify ∥ LLM EN PARALLÈLE (latence) ────────────
     # La vérif locuteur (réseau + ONNX) tourne EN MÊME TEMPS que le LLM. Sur le
     # chemin nominal (accepté), son coût disparaît dans l'ombre du LLM.
-    enriched = "\n".join(ambient_context) if ambient_context else None
     conv_id = await asyncio.to_thread(_get_device_conv_id, user_token)  # continuité agent
     # Persiste la COMMANDE TOUT DE SUITE → elle s'affiche instantanément (source unique)
     threading.Thread(target=_persist_msg, args=(user_token, conv_id, "user", transcript), daemon=True).start()
+    # RAG : récupère les souvenirs PERTINENTS (par sens) ∥ la vérif locuteur
     verify_task = asyncio.create_task(asyncio.to_thread(_verify_speaker, user_token, wav_data))
+    mem_task = asyncio.create_task(asyncio.to_thread(memory_service.retrieve, user_token, transcript))
+    memories = await mem_task
+    parts = list(ambient_context) if ambient_context else []
+    if memories:
+        parts.append(memories)
+    enriched = "\n".join(parts) if parts else None
     agent_task = asyncio.create_task(_run_agent(user_token, transcript, enriched, settings, conv_id))
 
     verify = await verify_task
@@ -469,9 +476,11 @@ async def transcribe(raw_request: Request, audio: UploadFile = File(...)):
     wav_data = raw if raw[:4] == b"RIFF" else pcm_to_wav(raw, sample_rate=16000)
     text = (await transcribe_audio(settings.MISTRAL_API_KEY, wav_data) or "").strip()
     if text and user_token:
-        # 1) affichage live (12 derniers) + 2) mémoire interrogeable par l'agent
+        # 1) affichage live (12 derniers)  2) mémoire datée (transcription du jour)
+        # 3) mémoire VECTORIELLE (RAG : recherche sémantique par l'agent)
         threading.Thread(target=_persist_ambient, args=(user_token, text), daemon=True).start()
         threading.Thread(target=_persist_ambient_memory, args=(user_token, text), daemon=True).start()
+        threading.Thread(target=memory_service.persist_chunk, args=(user_token, text, "ambient"), daemon=True).start()
     return {"text": text}
 
 
