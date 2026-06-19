@@ -164,14 +164,26 @@ def _push_status(user_token: str | None, **fields):
         logger.debug("[converse] push status error: %s", e)
 
 
-# ── Segmentation intelligente des conversations (par sujet) ──────────
-CONV_GAP_MIN = 30   # au-delà → nouvelle session (donc nouvelle conversation)
-
+# ── Segmentation intelligente des conversations (par SUJET, pas par temps) ──
 _TITLE_SYS = ("Donne un TITRE court (3 à 6 mots, sans guillemets ni ponctuation finale) "
               "résumant le sujet de ce message vocal. Réponds UNIQUEMENT le titre.")
-_TOPIC_SYS = ("Un utilisateur parle à un assistant vocal. Décide si le NOUVEAU message "
-              "continue la conversation en cours ou démarre un NOUVEAU sujet. "
-              "Réponds 'CONTINUE' (même sujet ou suite logique) ou 'NOUVEAU: <titre court 3-6 mots>'.")
+_TOPIC_SYS = (
+    "Tu décides si un NOUVEAU message vocal CONTINUE la conversation/réunion en cours "
+    "ou démarre un NOUVEAU sujet, en te basant sur les derniers échanges.\n"
+    "RÈGLE IMPORTANTE : une réunion/discussion peut durer des HEURES sur le même sujet. "
+    "Ne crée PAS un nouveau sujet juste parce que du temps a passé. Le critère est le SUJET, pas le temps.\n"
+    "Réponds 'NOUVEAU: <titre court 3-6 mots>' UNIQUEMENT si le message porte clairement sur "
+    "AUTRE CHOSE que ce qui précède. Sinon réponds 'CONTINUE'."
+)
+
+
+def _fmt_gap(minutes: float) -> str:
+    if minutes < 60:
+        return f"il y a {int(minutes)} min"
+    if minutes < 1440:
+        return f"il y a {int(minutes / 60)}h"
+    days = int(minutes / 1440)
+    return "hier" if days == 1 else f"il y a {days} jours"
 
 
 async def _haiku(system: str, user: str, max_tokens: int = 24) -> str:
@@ -195,7 +207,8 @@ async def _haiku(system: str, user: str, max_tokens: int = 24) -> str:
 
 
 def _recent_conversation(user_token: str):
-    """(conv_id, title, gap_minutes) de la conversation la plus récente, ou None."""
+    """(conv_id, title, gap_minutes, recent_text) de la conversation la plus
+    récente, ou None. recent_text = derniers échanges (pour juger la continuité)."""
     try:
         supabase = get_supabase_client(user_token)
         user_id = get_user_id(supabase, user_token)
@@ -206,7 +219,13 @@ def _recent_conversation(user_token: str):
         c = r.data[0]
         upd = datetime.fromisoformat((c["updated_at"] or "").replace("Z", "+00:00"))
         gap = (datetime.now(timezone.utc) - upd).total_seconds() / 60.0
-        return c["id"], (c.get("title") or ""), gap
+        msgs = (supabase.table("conversation_messages").select("role, content")
+                .eq("conversation_id", c["id"]).order("created_at", desc=True).limit(4).execute())
+        recent = "\n".join(
+            f"- {m['role']}: {(m.get('content') or '')[:150]}"
+            for m in reversed(msgs.data or [])
+        )
+        return c["id"], (c.get("title") or ""), gap, recent
     except Exception as e:
         logger.warning("[conv] recent error: %s", e)
         return None
@@ -225,24 +244,25 @@ def _create_conversation(user_token: str, title: str):
 
 
 async def _resolve_conversation(user_token: str | None, transcript: str) -> str | None:
-    """Choisit la conversation cible : continue le sujet en cours OU en crée une
-    nouvelle (gap temporel > 30 min OU changement de sujet détecté par Haiku)."""
+    """Choisit la conversation cible : continue le SUJET en cours OU en crée une
+    nouvelle. Critère = le SUJET (pas le temps) : une réunion peut durer des heures."""
     if not user_token:
         return None
     info = await asyncio.to_thread(_recent_conversation, user_token)
     if info:
-        conv_id, title, gap = info
-        if gap < CONV_GAP_MIN:
-            decision = await _haiku(
-                _TOPIC_SYS, f"Conversation en cours : « {title} ». Nouveau message : « {transcript[:200]} »")
-            if not decision or decision.upper().startswith("CONTINUE"):
-                return conv_id   # fail-open = on continue (ne pas fragmenter)
-            new_title = (decision.split(":", 1)[1].strip() if ":" in decision else "")
-            new_title = new_title or (await _haiku(_TITLE_SYS, transcript[:200])) or transcript[:40]
-            logger.info("[conv] nouveau sujet → « %s »", new_title)
-            return (await asyncio.to_thread(_create_conversation, user_token, new_title)) or conv_id
-        logger.info("[conv] gap %.0f min → nouvelle session", gap)
-    # pas de conversation récente / gap dépassé → nouvelle
+        conv_id, title, gap, recent = info
+        user_msg = (
+            f"Conversation en cours « {title} » (dernière activité {_fmt_gap(gap)}) :\n"
+            f"{recent}\n\nNOUVEAU message : « {transcript[:200]} »"
+        )
+        decision = await _haiku(_TOPIC_SYS, user_msg)
+        if not decision or decision.upper().startswith("CONTINUE"):
+            return conv_id   # fail-open = on continue (ne JAMAIS fragmenter à tort)
+        new_title = (decision.split(":", 1)[1].strip() if ":" in decision else "")
+        new_title = new_title or (await _haiku(_TITLE_SYS, transcript[:200])) or transcript[:40]
+        logger.info("[conv] nouveau sujet → « %s »", new_title)
+        return (await asyncio.to_thread(_create_conversation, user_token, new_title)) or conv_id
+    # première conversation
     title = (await _haiku(_TITLE_SYS, transcript[:200])) or transcript[:40] or "Conversation"
     return await asyncio.to_thread(_create_conversation, user_token, title)
 
