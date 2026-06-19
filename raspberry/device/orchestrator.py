@@ -204,15 +204,15 @@ class Orchestrator:
         is_user, _ = self.target.is_target(window)
         return bool(is_user)
 
-    # ── Appel cloud blindé : ne LÈVE jamais (sinon le device crasherait) ─
+    # ── Appel cloud blindé : ne LÈVE JAMAIS (sinon le device crasherait) ─
     def _safe_converse(self, full, from_conversing, ctx, tentative):
         try:
             return cloud.converse(full, from_conversing, ctx, tentative=tentative)
         except httpx.HTTPStatusError as e:
-            logger.error("[cloud] %s: %s", e.response.status_code, e.response.text[:200])
+            logger.error("[cloud] HTTP %s", e.response.status_code)  # PAS .text (réponse streaming)
             return {"kind": "status", "status": "error"}
         except Exception as e:
-            logger.error("[cloud] injoignable: %s", e)
+            logger.error("[cloud] injoignable: %s: %s", type(e).__name__, e)
             return {"kind": "status", "status": "error"}
 
     # ── THINKING : cloud (gated) → audio ou statut ───────────────────

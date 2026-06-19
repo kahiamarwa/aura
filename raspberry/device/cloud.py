@@ -194,7 +194,18 @@ def converse(command_pcm: np.ndarray, from_conversing: bool, context: list[str],
     )
     resp = cm.__enter__()
     try:
-        resp.raise_for_status()
+        # Erreur HTTP (502 proxy, 500…) : lire le corps PUIS fermer, et renvoyer un
+        # statut d'erreur propre (PAS de raise → évite le crash ResponseNotRead).
+        if resp.status_code >= 400:
+            body = ""
+            try:
+                body = (resp.read() or b"")[:200].decode("utf-8", "replace")
+            except Exception:
+                pass
+            cm.__exit__(None, None, None)
+            client.close()
+            logger.error("[cloud] converse HTTP %s: %s", resp.status_code, body)
+            return {"kind": "status", "status": "error", "code": resp.status_code}
         ctype = resp.headers.get("content-type", "")
         if not ctype.startswith("audio/"):
             data = json.loads(resp.read() or b"{}")
