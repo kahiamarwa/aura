@@ -273,8 +273,11 @@ class Orchestrator:
         self.last_transcript = res.get("transcript", "")   # pour l'affichage live
         self._spoke = True
         barge = self._speak(res, frames)
-        # Barge-in pendant la réponse = l'utilisateur enchaîne → réécoute (intent gating)
-        return ("LISTENING", True) if barge else ("CONVERSING", False)
+        if barge == "stop":
+            return "IDLE", False        # « Stop Aura » = silence (pas de réécoute)
+        if barge == "barge":
+            return "LISTENING", True     # ta voix par-dessus = tu enchaînes
+        return "CONVERSING", False       # fin normale → fenêtre de conversation
 
     # ── Teardown déterministe du SPEAKING (aucune fuite socket/zombie) ──
     def _teardown_speak(self, t, stop, res):
@@ -287,10 +290,11 @@ class Orchestrator:
         t.join(timeout=2.0)
 
     # ── SPEAKING : lecture EN STREAMING + barge-in (anti-écho) ───────
-    def _speak(self, res: dict, frames) -> bool:
+    def _speak(self, res: dict, frames) -> str | None:
         """Joue le MP3 EN STREAMING (Aura parle dès le 1er chunk).
 
-        Retourne True si interrompu (barge-in), False si fini.
+        Retourne 'stop' (« Stop Aura » → silence), 'barge' (ta voix → on écoute),
+        ou None (lecture finie normalement).
         """
         self._set_state("SPEAKING")
         self.ambient.set_enabled(False)
@@ -303,7 +307,7 @@ class Orchestrator:
             except Exception:
                 pass
             self._spoke = False
-            return False
+            return None
 
         def feed():
             try:
@@ -335,12 +339,12 @@ class Orchestrator:
             except StopIteration:
                 break
             ev = self.wake.process(frame)
-            # ANTI-ÉCHO : 'activate' ignoré (Aura s'entend) ; 'Stop Aura' coupe toujours.
+            # « Stop Aura » = je veux le SILENCE → on coupe et on s'arrête (IDLE).
             if ev == "interrupt":
-                logger.info("[state] STOP — coupure")
+                logger.info("[state] STOP — coupure (silence)")
                 self._teardown_speak(t, stop, res)
-                return True
-            # Barge-in par la VOIX DE L'UTILISATEUR (pas YouTube ni la voix d'Aura).
+                return "stop"
+            # Barge-in par TA VOIX (tu parles par-dessus) = tu enchaînes → on t'écoute.
             if gated:
                 win = np.concatenate([win, frame])[-win_max:]
                 hop += FRAME_S
@@ -349,12 +353,12 @@ class Orchestrator:
                     if self._user_in_window(win):
                         streak += 1
                         if streak >= 2:
-                            logger.info("[state] barge-in (ta voix) — coupure")
+                            logger.info("[state] barge-in (ta voix) — on écoute")
                             self._teardown_speak(t, stop, res)
-                            return True
+                            return "barge"
                     else:
                         streak = 0
-        return False
+        return None
 
     # ── CONVERSING : fenêtre 12 s, follow-up sans wake word ──────────
     def _conversing(self, frames) -> tuple[str, bool]:
