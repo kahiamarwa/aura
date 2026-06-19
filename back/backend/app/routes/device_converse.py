@@ -164,37 +164,87 @@ def _push_status(user_token: str | None, **fields):
         logger.debug("[converse] push status error: %s", e)
 
 
-_conv_id_cache: dict[str, str] = {}
+# ── Segmentation intelligente des conversations (par sujet) ──────────
+CONV_GAP_MIN = 30   # au-delà → nouvelle session (donc nouvelle conversation)
+
+_TITLE_SYS = ("Donne un TITRE court (3 à 6 mots, sans guillemets ni ponctuation finale) "
+              "résumant le sujet de ce message vocal. Réponds UNIQUEMENT le titre.")
+_TOPIC_SYS = ("Un utilisateur parle à un assistant vocal. Décide si le NOUVEAU message "
+              "continue la conversation en cours ou démarre un NOUVEAU sujet. "
+              "Réponds 'CONTINUE' (même sujet ou suite logique) ou 'NOUVEAU: <titre court 3-6 mots>'.")
 
 
-def _get_device_conv_id(user_token: str | None) -> str | None:
-    """conversation_id de l'enceinte (find-or-create) → continuité de l'agent.
+async def _haiku(system: str, user: str, max_tokens: int = 24) -> str:
+    settings = get_settings()
+    if not settings.ANTHROPIC_API_KEY:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": settings.ANTHROPIC_API_KEY,
+                         "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                json={"model": "claude-haiku-4-5-20251001", "max_tokens": max_tokens,
+                      "system": system, "messages": [{"role": "user", "content": user}]},
+            )
+        if r.status_code != 200:
+            return ""
+        return r.json()["content"][0]["text"].strip()
+    except Exception:
+        return ""
 
-    L'agent charge l'historique par conversation_id : sans ça, il ne se souvient
-    pas des tours précédents (« je n'ai pas de rapport précédent »).
-    """
-    uid = _uid_from_jwt(user_token) if user_token else None
-    if not uid:
-        return None
-    if uid in _conv_id_cache:
-        return _conv_id_cache[uid]
+
+def _recent_conversation(user_token: str):
+    """(conv_id, title, gap_minutes) de la conversation la plus récente, ou None."""
     try:
         supabase = get_supabase_client(user_token)
         user_id = get_user_id(supabase, user_token)
-        existing = (
-            supabase.table("conversations").select("id")
-            .eq("user_id", user_id).eq("title", DEVICE_CONV_TITLE).limit(1).execute()
-        )
-        conv_id = (
-            existing.data[0]["id"] if existing.data
-            else supabase.table("conversations").insert(
-                {"user_id": user_id, "title": DEVICE_CONV_TITLE}).execute().data[0]["id"]
-        )
-        _conv_id_cache[uid] = conv_id
-        return conv_id
+        r = (supabase.table("conversations").select("id, title, updated_at")
+             .eq("user_id", user_id).order("updated_at", desc=True).limit(1).execute())
+        if not r.data:
+            return None
+        c = r.data[0]
+        upd = datetime.fromisoformat((c["updated_at"] or "").replace("Z", "+00:00"))
+        gap = (datetime.now(timezone.utc) - upd).total_seconds() / 60.0
+        return c["id"], (c.get("title") or ""), gap
     except Exception as e:
-        logger.warning("[converse] get conv id error: %s", e)
+        logger.warning("[conv] recent error: %s", e)
         return None
+
+
+def _create_conversation(user_token: str, title: str):
+    try:
+        supabase = get_supabase_client(user_token)
+        user_id = get_user_id(supabase, user_token)
+        r = supabase.table("conversations").insert(
+            {"user_id": user_id, "title": (title or "Conversation")[:80]}).execute()
+        return r.data[0]["id"]
+    except Exception as e:
+        logger.warning("[conv] create error: %s", e)
+        return None
+
+
+async def _resolve_conversation(user_token: str | None, transcript: str) -> str | None:
+    """Choisit la conversation cible : continue le sujet en cours OU en crée une
+    nouvelle (gap temporel > 30 min OU changement de sujet détecté par Haiku)."""
+    if not user_token:
+        return None
+    info = await asyncio.to_thread(_recent_conversation, user_token)
+    if info:
+        conv_id, title, gap = info
+        if gap < CONV_GAP_MIN:
+            decision = await _haiku(
+                _TOPIC_SYS, f"Conversation en cours : « {title} ». Nouveau message : « {transcript[:200]} »")
+            if not decision or decision.upper().startswith("CONTINUE"):
+                return conv_id   # fail-open = on continue (ne pas fragmenter)
+            new_title = (decision.split(":", 1)[1].strip() if ":" in decision else "")
+            new_title = new_title or (await _haiku(_TITLE_SYS, transcript[:200])) or transcript[:40]
+            logger.info("[conv] nouveau sujet → « %s »", new_title)
+            return (await asyncio.to_thread(_create_conversation, user_token, new_title)) or conv_id
+        logger.info("[conv] gap %.0f min → nouvelle session", gap)
+    # pas de conversation récente / gap dépassé → nouvelle
+    title = (await _haiku(_TITLE_SYS, transcript[:200])) or transcript[:40] or "Conversation"
+    return await asyncio.to_thread(_create_conversation, user_token, title)
 
 
 async def _run_agent(user_token, transcript, enriched, settings, conv_id=None):
@@ -303,7 +353,7 @@ async def converse(
     # ── 3+4. Speaker verify ∥ LLM EN PARALLÈLE (latence) ────────────
     # La vérif locuteur (réseau + ONNX) tourne EN MÊME TEMPS que le LLM. Sur le
     # chemin nominal (accepté), son coût disparaît dans l'ombre du LLM.
-    conv_id = await asyncio.to_thread(_get_device_conv_id, user_token)  # continuité agent
+    conv_id = await _resolve_conversation(user_token, transcript)  # conversation par sujet
     # Persiste la COMMANDE TOUT DE SUITE → elle s'affiche instantanément (source unique)
     threading.Thread(target=_persist_msg, args=(user_token, conv_id, "user", transcript), daemon=True).start()
     # RAG : récupère les souvenirs PERTINENTS (par sens) ∥ la vérif locuteur
