@@ -267,8 +267,11 @@ class Orchestrator:
         if res["kind"] == "status":
             st = res.get("status")
             if st == "not_directed":
-                logger.info("[gate] pas pour Aura → conversing")
-            elif st == "rejected":
+                # Pas pour Aura (tu parles aux gens) → on SORT du suivi (IDLE).
+                # Sinon le bruit/la discussion relance la capture sans arrêt (vert non-stop).
+                logger.info("[gate] pas pour Aura → IDLE (fin du suivi, dis « Dis Aura » pour relancer)")
+                return "IDLE", False
+            if st == "rejected":
                 logger.info("[gate] locuteur non reconnu (%s, %.2f) → conversing",
                             res.get("speaker_name"), res.get("score") or 0)
             else:

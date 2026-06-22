@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # (audio court) était instable et reste non gardé. VERIFY_SPEAKER_ENFORCE=0 pour ouvrir à tous.
     VERIFY_SPEAKER_ENFORCE: bool = True
 
+    # Seuil de confiance pour REJETER une phrase "pas pour Aura" (en mode suivi).
+    # Plus BAS = filtre plus agressif (utile en milieu bruyant / discussions).
+    # 0.6 par défaut : on coupe le suivi dès que Haiku est raisonnablement sûr.
+    INTENT_CONFIDENCE: float = 0.6
+
     class Config:
         env_file = ".env"
 

@@ -375,8 +375,9 @@ async def converse(
     # Dans le doute → on répond (mieux vaut répondre que d'ignorer une vraie demande).
     if from_conv:
         intent = await classify_intent(transcript, ambient_context)
-        if not intent.get("directed", True) and intent.get("confidence", 0.0) >= 0.75:
-            logger.info("[converse] not directed at Aura (conf=%.2f) → skip", intent.get("confidence", 0.0))
+        if not intent.get("directed", True) and intent.get("confidence", 0.0) >= settings.INTENT_CONFIDENCE:
+            logger.info("[converse] not directed at Aura (conf=%.2f ≥ %.2f) → skip",
+                        intent.get("confidence", 0.0), settings.INTENT_CONFIDENCE)
             return JSONResponse({"status": "not_directed", "transcript": transcript})
 
     # Efface le badge locuteur du tour PRÉCÉDENT : sinon l'ancien nom/score reste
