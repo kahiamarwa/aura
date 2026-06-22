@@ -30,9 +30,10 @@ sudo apt-get update
 sudo apt-get install -y \
   pipewire pipewire-pulse pipewire-audio wireplumber \
   libspa-0.2-modules libasound2-plugins \
-  mpg123 alsa-utils
+  pulseaudio-utils mpg123 alsa-utils
 # libspa-0.2-modules => fournit aec/libspa-aec-webrtc (le WebRTC AEC)
 # libasound2-plugins => fournit le PCM ALSA "pulse" (pour sounddevice/aplay/mpg123)
+# pulseaudio-utils   => fournit `pactl` (utilisé par le service aec-default + vérifs)
 
 echo "==> [3/7] Services PipeWire user + linger (survie au boot sans session)"
 systemctl --user enable --now pipewire.service pipewire-pulse.service wireplumber.service || true
