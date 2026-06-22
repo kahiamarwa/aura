@@ -379,6 +379,10 @@ async def converse(
             logger.info("[converse] not directed at Aura (conf=%.2f) → skip", intent.get("confidence", 0.0))
             return JSONResponse({"status": "not_directed", "transcript": transcript})
 
+    # Efface le badge locuteur du tour PRÉCÉDENT : sinon l'ancien nom/score reste
+    # affiché tant que la vérif du locuteur ACTUEL n'a pas fini (~1s) → décalage.
+    _push_status(user_token, speaker=None, verified=None, speaker_score=None)
+
     # ── 3+4. Speaker verify ∥ LLM EN PARALLÈLE (latence) ────────────
     # La vérif locuteur (réseau + ONNX) tourne EN MÊME TEMPS que le LLM. Sur le
     # chemin nominal (accepté), son coût disparaît dans l'ombre du LLM.
@@ -404,7 +408,9 @@ async def converse(
             await agent_task
         except BaseException:
             pass
-        _push_status(user_token, task=None, response=None)
+        _push_status(user_token, task=None, response=None,
+                     speaker=verify.get("speaker_name"), verified=False,
+                     speaker_score=verify.get("score"))
         return JSONResponse({
             "status": "rejected",
             "transcript": transcript,
