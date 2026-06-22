@@ -111,13 +111,18 @@ class Orchestrator:
         started = False
         absent_s = 0.0
         wait_s = 0.0
-        noise_floor = None      # niveau ambiant mesuré avant la parole (plancher adaptatif)
+        hop_voiced = False      # le VAD a-t-il vu de la parole sur le hop courant ?
+        self.vad.reset()        # état Silero propre pour cette commande
 
         for frame in frames:
             chunks.append(frame)
             total_s += FRAME_S
             win = np.concatenate([win, frame])[-win_max:]
             hop += FRAME_S
+            # VAD Silero à CHAQUE frame (modèle stateful) : robuste au bruit/ronflement,
+            # là où l'énergie brute gardait l'enregistrement ouvert jusqu'au cap.
+            if self.vad.is_speech(frame):
+                hop_voiced = True
 
             # Cap de sécurité absolu — coupe toujours
             if total_s >= config.CMD_MAX_S:
@@ -129,16 +134,11 @@ class Orchestrator:
                 continue
             hop = 0.0
 
-            win_rms = _rms(win)
-            # Plancher de bruit adaptatif : tant que TU n'as pas commencé, on suit
-            # le niveau ambiant. Le seuil "parole" = ambiant × facteur (jamais sous
-            # le minimum statique). Quand l'énergie y retombe → vraie fin de parole.
-            if not started:
-                noise_floor = win_rms if noise_floor is None else 0.85 * noise_floor + 0.15 * win_rms
-            sil_thresh = max(config.CMD_SILENCE_RMS, (noise_floor or 0.0) * config.CMD_SILENCE_FACTOR)
-            speaking = win_rms >= sil_thresh
-            if win_rms < sil_thresh * 0.6:
-                present = False                         # clairement silence
+            win_rms = _rms(win)           # pour logs + _user_in_window
+            speaking = hop_voiced         # parole = décision VAD (pas l'énergie)
+            hop_voiced = False
+            if not speaking:
+                present = False                         # VAD : silence (robuste au bruit)
             elif use_target and len(win) >= min_win:
                 is_user, score = self.target.is_target(win)
                 if is_user is None:                     # modèle indispo → repli énergie
