@@ -413,6 +413,8 @@ class Orchestrator:
     # ── Boucle principale ────────────────────────────────────────────
     def run(self):
         self.target.load_references()   # cache l'empreinte vocale (endpointing local)
+        if config.AEC_ENABLED:
+            logger.info("[AEC] activé — audio via « %s » (annulation d'écho PipeWire)", config.AEC_ALSA_DEVICE)
         self.ambient.start()
         threading.Thread(target=self._state_pusher, daemon=True).start()  # états → front (ordre garanti)
         logger.info("Aura prêt. Dites « Dis Aura ».")

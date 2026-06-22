@@ -20,6 +20,25 @@ from . import config
 logger = logging.getLogger(__name__)
 
 
+def _mpg123_cmd() -> list[str]:
+    """Commande mpg123 (MP3 sur stdin). Si AEC activé, sort via le bridge ALSA→
+    PipeWire (config.PLAYBACK_ALSA_DEVICE) pour servir de référence d'écho."""
+    cmd = ["mpg123", "-q"]
+    if config.PLAYBACK_ALSA_DEVICE:
+        cmd += ["-o", "alsa", "-a", config.PLAYBACK_ALSA_DEVICE]
+    cmd.append("-")
+    return cmd
+
+
+def _aplay_cmd(path: str) -> list[str]:
+    """Commande aplay, routée via le bridge AEC si activé."""
+    cmd = ["aplay", "-q"]
+    if config.PLAYBACK_ALSA_DEVICE:
+        cmd += ["-D", config.PLAYBACK_ALSA_DEVICE]
+    cmd.append(path)
+    return cmd
+
+
 class MicStream:
     """Flux micro continu. Itère des frames int16 de FRAME_SAMPLES à 16 kHz.
 
@@ -132,7 +151,7 @@ def play_beep(freq: float = 880.0, dur: float = 0.18, gain: float = 0.3):
                 wf.setframerate(sr)
                 wf.writeframes(tone.tobytes())
             _beep_ready = True
-        subprocess.Popen(["aplay", "-q", _BEEP_WAV],
+        subprocess.Popen(_aplay_cmd(_BEEP_WAV),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
@@ -149,7 +168,7 @@ class Player:
         self.stop()
         try:
             self._proc = subprocess.Popen(
-                ["mpg123", "-q", "-"],
+                _mpg123_cmd(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -169,7 +188,7 @@ class Player:
         self.stop()
         try:
             self._proc = subprocess.Popen(
-                ["mpg123", "-q", "-"],
+                _mpg123_cmd(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

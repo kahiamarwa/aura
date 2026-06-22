@@ -56,9 +56,31 @@ TOKEN_FILE = os.path.expanduser(os.getenv("AURA_TOKEN_FILE", "~/.aura/session.js
 # ── Audio ────────────────────────────────────────────────────────────
 SAMPLE_RATE = 16000          # openWakeWord + STT attendent 16 kHz mono
 FRAME_SAMPLES = 1280         # 80 ms à 16 kHz (taille de frame openWakeWord)
+
+# ── AEC : annulation d'écho (le micro ne capte plus le haut-parleur) ──
+# Quand activé (après avoir lancé setup_aec.sh sur le Pi), capture ET lecture
+# passent par le périphérique "pulse" (ALSA → PipeWire) où vit module-echo-cancel
+# (WebRTC AEC). Aura cesse de s'entendre elle-même → barge-in/« Stop Aura »
+# fiables PENDANT qu'elle parle. OFF par défaut (rien ne change tant que le setup
+# n'est pas fait). L'alignement temporel écho est géré par l'OS (éprouvé).
+AEC_ENABLED = os.getenv("AEC_ENABLED", "0") == "1"
+# Nom du PCM ALSA qui ponte vers PipeWire (où vit l'annulateur). "pulse" par
+# défaut (plugin libasound2-plugins). Configurable si le setup expose un autre nom.
+AEC_ALSA_DEVICE = os.getenv("AEC_ALSA_DEVICE", "pulse")
+
 _input = os.getenv("AUDIO_INPUT_DEVICE")
 # sounddevice accepte un index (int) OU un nom (str). On parse l'int si numérique.
-INPUT_DEVICE = int(_input) if _input and _input.isdigit() else (_input or None)
+if _input:
+    INPUT_DEVICE = int(_input) if _input.isdigit() else _input
+elif AEC_ENABLED:
+    INPUT_DEVICE = AEC_ALSA_DEVICE    # capture via l'annulateur d'écho (PipeWire)
+else:
+    INPUT_DEVICE = None
+
+# Périphérique de sortie ALSA pour mpg123/aplay : le bridge pulse si AEC, sinon
+# None = défaut ALSA. La lecture DOIT passer par le même graphe que la capture
+# pour servir de référence d'écho à l'annulateur.
+PLAYBACK_ALSA_DEVICE = AEC_ALSA_DEVICE if AEC_ENABLED else None
 
 # ── Wake word (modèles ONNX locaux) ──────────────────────────────────
 _REPO_ROOT = Path(__file__).resolve().parents[1]
