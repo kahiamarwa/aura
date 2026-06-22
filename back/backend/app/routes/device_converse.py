@@ -415,10 +415,11 @@ async def converse(
         logger.info("[converse] locuteur non reconnu (%s, %.2f) mais on répond (verif non bloquante)",
                     verify.get("speaker_name"), verify.get("score") or 0.0)
 
-    # Badge de vérification locuteur → front (parité avec l'ancien web : ✓/✗ nom)
+    # Badge de vérification locuteur → front (parité avec l'ancien web : ✓/✗ nom + score)
     if verify.get("speaker_name"):
         _push_status(user_token, speaker=verify.get("speaker_name"),
-                     verified=bool(verify.get("verified")))
+                     verified=bool(verify.get("verified")),
+                     speaker_score=verify.get("score"))
 
     response_text, attachments = await agent_task
     response_text = (response_text or "").strip()

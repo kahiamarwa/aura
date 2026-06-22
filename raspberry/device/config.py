@@ -85,10 +85,14 @@ VAD_SPEECH_FRAMES = 2          # frames consécutives pour démarrer (~hystéré
 VAD_SILENCE_FRAMES = 20        # frames de silence pour clore (~0.6s à 32ms/frame)
 
 # ── Capture de la commande ───────────────────────────────────────────
-CMD_SILENCE_RMS = float(os.getenv("CMD_SILENCE_RMS", "300"))   # fallback énergie si pas de VAD
+CMD_SILENCE_RMS = float(os.getenv("CMD_SILENCE_RMS", "300"))   # plancher énergie minimal
 CMD_SILENCE_HANG_S = 1.0      # silence consécutif pour clore la commande
-CMD_MAX_S = 12.0              # durée max d'une commande (cap de sécurité absolu)
+CMD_MAX_S = float(os.getenv("CMD_MAX_S", "20"))   # cap de sécurité (configurable) — long commandes OK
 CMD_MIN_SPEECH_S = 0.3        # parole min pour considérer une vraie commande
+# Plancher de bruit ADAPTATIF : la parole = ambiant × ce facteur. On mesure le
+# niveau ambiant AVANT que tu parles, puis on clôt quand l'énergie y retombe
+# (détecte la vraie fin de parole même en pièce bruyante, au lieu d'aller au cap).
+CMD_SILENCE_FACTOR = float(os.getenv("CMD_SILENCE_FACTOR", "2.0"))
 
 # ── Endpointing par LOCUTEUR CIBLE (robuste en milieu bruyant) ───────
 # ON : marche bien sur une commande medium/longue (assez d'audio pour identifier

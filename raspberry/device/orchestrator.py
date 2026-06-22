@@ -111,6 +111,7 @@ class Orchestrator:
         started = False
         absent_s = 0.0
         wait_s = 0.0
+        noise_floor = None      # niveau ambiant mesuré avant la parole (plancher adaptatif)
 
         for frame in frames:
             chunks.append(frame)
@@ -129,8 +130,14 @@ class Orchestrator:
             hop = 0.0
 
             win_rms = _rms(win)
-            speaking = win_rms >= config.CMD_SILENCE_RMS
-            if win_rms < config.CMD_SILENCE_RMS * 0.5:
+            # Plancher de bruit adaptatif : tant que TU n'as pas commencé, on suit
+            # le niveau ambiant. Le seuil "parole" = ambiant × facteur (jamais sous
+            # le minimum statique). Quand l'énergie y retombe → vraie fin de parole.
+            if not started:
+                noise_floor = win_rms if noise_floor is None else 0.85 * noise_floor + 0.15 * win_rms
+            sil_thresh = max(config.CMD_SILENCE_RMS, (noise_floor or 0.0) * config.CMD_SILENCE_FACTOR)
+            speaking = win_rms >= sil_thresh
+            if win_rms < sil_thresh * 0.6:
                 present = False                         # clairement silence
             elif use_target and len(win) >= min_win:
                 is_user, score = self.target.is_target(win)
