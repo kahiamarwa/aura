@@ -161,6 +161,23 @@ def push_state(state: str, transcript: str = "", seq: int = 0) -> None:
         pass
 
 
+def get_mute_state() -> bool:
+    """Lit le flag mute distant (mode confidentiel), poussé par le web. Poll léger.
+
+    True → le device doit COUPER micro + ambiant (rien n'est envoyé au cloud).
+    Réseau injoignable → False (on ne bloque pas le device sur une erreur réseau).
+    """
+    if not (config.DEVICE_TOKEN or get_access_token()):
+        return False
+    try:
+        r = _state_client.get(_url("/api/device/control"), headers=_headers())
+        if r.status_code == 200:
+            return bool(r.json().get("muted"))
+    except Exception:
+        pass
+    return False
+
+
 def converse(command_pcm: np.ndarray, from_conversing: bool, context: list[str],
              tentative: bool = False) -> dict:
     """Envoie la commande au cloud (pipeline gated complet).

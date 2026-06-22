@@ -50,6 +50,7 @@ class Orchestrator:
         self.state = "IDLE"
         self.last_transcript = ""        # dernière commande (pour l'affichage live)
         self._stop_watch = False
+        self._muted = threading.Event()  # mode confidentiel (mute logiciel à distance)
         self._seq = 0                    # ordre monotone des états (anti-désordre)
         self._state_q: "queue.Queue" = queue.Queue()
 
@@ -81,6 +82,20 @@ class Orchestrator:
                 cloud.push_state(self.state, "", self._seq)   # heartbeat
                 continue
             cloud.push_state(state, tr, seq)
+
+    # ── Poll du mute distant (mode confidentiel piloté par le web) ───
+    def _mute_poller(self):
+        """Interroge le cloud : le web a-t-il coupé le micro ? Met à jour l'event.
+        Erreur réseau → on ne change rien (on ne mute pas par accident)."""
+        while not self._stop_watch:
+            try:
+                if cloud.get_mute_state():
+                    self._muted.set()
+                else:
+                    self._muted.clear()
+            except Exception:
+                pass
+            time.sleep(config.MUTE_POLL_S)
 
     # ── LISTENING : enregistrement avec endpointing par locuteur cible ─
     def _record_command(self, frames, continuation: bool = False) -> np.ndarray | None:
@@ -420,6 +435,8 @@ class Orchestrator:
             logger.info("[AEC] activé — audio via « %s » (annulation d'écho PipeWire)", config.AEC_ALSA_DEVICE)
         self.ambient.start()
         threading.Thread(target=self._state_pusher, daemon=True).start()  # états → front (ordre garanti)
+        if config.MUTE_POLL_S > 0:
+            threading.Thread(target=self._mute_poller, daemon=True).start()  # mute distant (mode confidentiel)
         logger.info("Aura prêt. Dites « Dis Aura ».")
         with MicStream() as mic:
             self.mic = mic
@@ -431,6 +448,22 @@ class Orchestrator:
             recent = np.zeros(0, dtype=np.int16)        # ~1.5s pour le speaker-gate
             recent_max = int(1.5 * config.SAMPLE_RATE)
             while True:
+                # ── Mode confidentiel : micro COUPÉ (rien n'est envoyé au cloud) ──
+                if self._muted.is_set():
+                    if self.state != "MUTED":
+                        logger.info("[mute] 🔴 micro coupé (mode confidentiel) — rien n'est envoyé")
+                        self.player.stop()
+                        self.ambient.set_enabled(False)
+                        from_conversing = False
+                        self._set_state("MUTED")
+                    if getattr(self, "mic", None):
+                        self.mic.flush()             # jette l'audio capté (aucun traitement)
+                    time.sleep(0.2)
+                    continue
+                if self.state == "MUTED":            # sortie de mute → reprise
+                    logger.info("[mute] 🟢 micro réactivé")
+                    self._set_state("IDLE")
+
                 # Garde anti-boucle GLOBAL (couvre tous les chemins) — P8
                 if wasted >= config.MAX_WASTED and self.state != "IDLE":
                     logger.info("[guard] %d cycles sans réponse → IDLE (dites « Dis Aura »)", wasted)

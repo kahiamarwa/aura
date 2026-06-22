@@ -64,6 +64,11 @@ FRAME_SAMPLES = 1280         # 80 ms à 16 kHz (taille de frame openWakeWord)
 # fiables PENDANT qu'elle parle. OFF par défaut (rien ne change tant que le setup
 # n'est pas fait). L'alignement temporel écho est géré par l'OS (éprouvé).
 AEC_ENABLED = os.getenv("AEC_ENABLED", "0") == "1"
+
+# ── Mute logiciel à distance (mode confidentiel, piloté par le web) ──
+# Le device interroge le cloud tous les MUTE_POLL_S s ; si muté → coupe micro +
+# ambiant (rien n'est envoyé au cloud). MUTE_POLL=0 désactive le poll.
+MUTE_POLL_S = float(os.getenv("MUTE_POLL_S", "2.0"))
 # Nom du PCM ALSA qui ponte vers PipeWire (où vit l'annulateur). "pulse" par
 # défaut (plugin libasound2-plugins). Configurable si le setup expose un autre nom.
 AEC_ALSA_DEVICE = os.getenv("AEC_ALSA_DEVICE", "pulse")
