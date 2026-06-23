@@ -152,6 +152,12 @@ CONVERSATION_WINDOW_S = 12.0   # fenêtre pour répondre sans wake word (convers
 CONVERSING_RMS = float(os.getenv("CONVERSING_RMS", "350"))   # seuil parole en conversing
 SPEAKING_RMS = float(os.getenv("SPEAKING_RMS", "600"))       # seuil barge-in pendant TTS (> écho)
 FOLLOWUP_SPEECH_FRAMES = 3     # frames consécutives pour déclencher un follow-up/barge-in
+# Barge-in pendant que Aura PARLE : nb de hops (×0.4s) de TA voix avant de basculer
+# en écoute. Volontairement HAUT (1.6s) pour laisser « Stop Aura » (~1-1.2s) GAGNER
+# la course — sinon dire « Stop Aura » est pris pour un barge-in et lance l'écoute.
+BARGE_STREAK = int(os.getenv("BARGE_STREAK", "4"))
+# 0 = désactive le barge-in vocal pendant le TTS → SEUL « Stop Aura » interrompt.
+BARGE_IN_ENABLED = os.getenv("BARGE_IN_ENABLED", "1") == "1"
 
 # ── Contexte ambiant (STT passif) ────────────────────────────────────
 AMBIENT_ENABLED = os.getenv("AMBIENT_ENABLED", "1") == "1"

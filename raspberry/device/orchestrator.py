@@ -357,7 +357,8 @@ class Orchestrator:
         t = threading.Thread(target=feed, daemon=True)
         t.start()
         logger.info("[state] SPEAKING — (« Stop Aura » pour couper)")
-        gated = self.target.has_reference   # barge-in vocal seulement si enrôlé
+        # barge-in vocal : seulement si enrôlé ET activé (sinon SEUL « Stop Aura » coupe)
+        gated = self.target.has_reference and config.BARGE_IN_ENABLED
         win = np.zeros(0, dtype=np.int16)
         win_max = int(1.0 * config.SAMPLE_RATE)
         hop = 0.0
@@ -374,6 +375,7 @@ class Orchestrator:
                 self._teardown_speak(t, stop, res)
                 return "stop"
             # Barge-in par TA VOIX (tu parles par-dessus) = tu enchaînes → on t'écoute.
+            # Seuil HAUT (BARGE_STREAK) pour laisser « Stop Aura » gagner la course.
             if gated:
                 win = np.concatenate([win, frame])[-win_max:]
                 hop += FRAME_S
@@ -381,7 +383,7 @@ class Orchestrator:
                     hop = 0.0
                     if self._user_in_window(win):
                         streak += 1
-                        if streak >= 2:
+                        if streak >= config.BARGE_STREAK:
                             logger.info("[state] barge-in (ta voix) — on écoute")
                             self._teardown_speak(t, stop, res)
                             return "barge"
