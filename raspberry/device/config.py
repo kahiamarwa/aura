@@ -134,6 +134,13 @@ ENDPOINT_VAD = os.getenv("ENDPOINT_VAD", "1") == "1"
 SMART_TURN_ENABLED = os.getenv("SMART_TURN_ENABLED", "0") == "1"
 SMART_TURN_MODEL = os.getenv("SMART_TURN_MODEL", "")          # vide → download HF (variante CPU int8)
 SMART_TURN_THRESHOLD = float(os.getenv("SMART_TURN_THRESHOLD", "0.5"))   # proba > seuil = fini
+
+# ── Mode STREAMING (chemin B complet : WS + Scribe + Smart Turn) ──────
+# 1 = nouveau flux temps réel (remplace capture-WAV-puis-envoi). Nécessite le
+# backend déployé (route /api/device-stream) + pip install websocket-client.
+# OFF par défaut → l'ancien flux (cloud.converse) reste le fallback.
+STREAMING_MODE = os.getenv("STREAMING_MODE", "0") == "1"
+STREAM_PAUSE_S = float(os.getenv("STREAM_PAUSE_S", "0.4"))   # silence avant de tester Smart Turn
 VAD_SPEECH_FRAMES = 2          # frames consécutives pour démarrer (~hystérésis)
 VAD_SILENCE_FRAMES = 20        # frames de silence pour clore (~0.6s à 32ms/frame)
 
