@@ -36,7 +36,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _ELEVEN_WS = ("wss://api.elevenlabs.io/v1/speech-to-text/realtime"
-              "?model_id=scribe_v2_realtime")
+              "?model_id=scribe_v2_realtime&commit_strategy=manual")
+# Chunk vide qui force le commit (= fin de tour) côté ElevenLabs.
+_SILENCE_B64 = base64.b64encode(b"\x00" * 320).decode()
 
 
 async def _connect_eleven(api_key: str):
@@ -75,36 +77,48 @@ async def device_stream(ws: WebSocket):
         await ws.close()
         return
 
-    committed = ""   # dernier transcript figé
+    committed = ""        # dernier transcript figé
+    eot_pending = False   # un EOT device attend le committed_transcript d'ElevenLabs
 
     async def eleven_to_device():
-        nonlocal committed
+        nonlocal committed, eot_pending
         try:
             async for raw in eleven:
                 try:
                     msg = json.loads(raw)
                 except Exception:
                     continue
-                t = msg.get("type")
-                if t == "partial_transcript":
+                mt = msg.get("message_type")
+                if mt == "partial_transcript":
                     await ws.send_json({"type": "partial", "text": msg.get("text", "")})
-                elif t in ("committed_transcript", "committed_transcript_with_timestamps"):
+                elif mt in ("committed_transcript", "committed_transcript_with_timestamps"):
                     committed = msg.get("text", "") or committed
-                    await ws.send_json({"type": "committed", "text": committed})
+                    if eot_pending:
+                        eot_pending = False
+                        transcript = committed.strip()
+                        logger.info("[stream] EOT → transcript=%r", transcript[:80])
+                        # TODO étape 1b : intent → LLM → TTS et streamer le MP3 en retour.
+                        await ws.send_json({"type": "final", "transcript": transcript})
+                    else:
+                        await ws.send_json({"type": "committed", "text": committed})
+                elif mt in ("error", "auth_error", "input_error", "quota_exceeded", "rate_limited"):
+                    logger.warning("[stream] ElevenLabs %s: %s", mt, msg.get("error"))
         except Exception:
             pass
 
     async def device_to_eleven():
-        nonlocal committed
+        nonlocal committed, eot_pending
         while True:
             data = await ws.receive()
             if data.get("type") == "websocket.disconnect":
                 break
             chunk = data.get("bytes")
             if chunk:
-                # PCM brut → base64 → ElevenLabs
+                # PCM 16k brut → base64 → ElevenLabs (format officiel)
                 await eleven.send(json.dumps({
-                    "input_audio_chunk": base64.b64encode(chunk).decode(),
+                    "message_type": "input_audio_chunk",
+                    "audio_base_64": base64.b64encode(chunk).decode(),
+                    "commit": False,
                     "sample_rate": 16000,
                 }))
                 continue
@@ -116,14 +130,17 @@ async def device_stream(ws: WebSocket):
             except Exception:
                 continue
             if cmd.get("type") == "eot":
-                transcript = (committed or "").strip()
-                logger.info("[stream] EOT → transcript=%r", transcript[:80])
-                # TODO étape 1b : intent → LLM → TTS (réutiliser device_converse) et
-                #   streamer le MP3 en retour sur ce WS.
-                await ws.send_json({"type": "final", "transcript": transcript})
-                committed = ""
+                # fin de tour (Smart Turn local) → on COMMITE → committed_transcript suit
+                eot_pending = True
+                await eleven.send(json.dumps({
+                    "message_type": "input_audio_chunk",
+                    "audio_base_64": _SILENCE_B64,
+                    "commit": True,
+                    "sample_rate": 16000,
+                }))
             elif cmd.get("type") == "cancel":
                 committed = ""
+                eot_pending = False
 
     try:
         await asyncio.gather(eleven_to_device(), device_to_eleven())

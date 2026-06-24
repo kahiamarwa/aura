@@ -18,7 +18,8 @@ import wave
 import numpy as np
 import websockets
 
-WS = "wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime"
+WS = ("wss://api.elevenlabs.io/v1/speech-to-text/realtime"
+      "?model_id=scribe_v2_realtime&commit_strategy=manual")
 
 
 def _load_pcm(path: str | None) -> bytes:
@@ -53,15 +54,24 @@ async def main():
                 print("← REÇU (brut):", raw[:200])
 
     rt = asyncio.create_task(reader())
-    # envoie l'audio en chunks de 80ms (2560 octets)
+    # envoie l'audio en chunks de 80ms (2560 octets) — format officiel
     print("--- envoi audio (chunks input_audio_chunk) ---")
     for i in range(0, len(pcm), 2560):
         await ws.send(json.dumps({
-            "input_audio_chunk": base64.b64encode(pcm[i:i + 2560]).decode(),
+            "message_type": "input_audio_chunk",
+            "audio_base_64": base64.b64encode(pcm[i:i + 2560]).decode(),
+            "commit": False,
             "sample_rate": 16000,
         }))
         await asyncio.sleep(0.05)
-    print("--- audio envoyé, attente des transcripts (5s) ---")
+    # commit final (= fin de tour) → force le committed_transcript
+    await ws.send(json.dumps({
+        "message_type": "input_audio_chunk",
+        "audio_base_64": base64.b64encode(b"\x00" * 320).decode(),
+        "commit": True,
+        "sample_rate": 16000,
+    }))
+    print("--- audio envoyé + commit, attente des transcripts (5s) ---")
     await asyncio.sleep(5)
     rt.cancel()
     await ws.close()
