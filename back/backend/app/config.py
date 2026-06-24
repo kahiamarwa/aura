@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
     MISTRAL_API_KEY: str = ""
+    DEEPGRAM_API_KEY: str = ""   # Flux (STT streaming + turn detection) — chemin B
 
     # Token présenté par les enceintes (devices headless) via X-Device-Token.
     # Si défini, les routes /api/device/* l'exigent. Production : table devices.
@@ -35,6 +36,10 @@ class Settings(BaseSettings):
     # Plus BAS = filtre plus agressif (utile en milieu bruyant / discussions).
     # 0.6 par défaut : on coupe le suivi dès que Haiku est raisonnablement sûr.
     INTENT_CONFIDENCE: float = 0.6
+
+    # Deepgram Flux (chemin B) : seuil de confiance fin de tour (0.5-0.9 ; ↑ = plus
+    # patient, attend que tu aies vraiment fini). eot_timeout = filet à 5s.
+    FLUX_EOT_THRESHOLD: float = 0.7
 
     class Config:
         env_file = ".env"

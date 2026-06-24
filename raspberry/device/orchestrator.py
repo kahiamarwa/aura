@@ -309,69 +309,54 @@ class Orchestrator:
             return "LISTENING", True     # ta voix par-dessus = tu enchaînes
         return "CONVERSING", False       # fin normale → fenêtre de conversation
 
-    # ── Chemin B : flux STREAMING (Silero VAD + Smart Turn → EOT local) ──
+    # ── Chemin B : flux STREAMING (Deepgram Flux décide la fin de tour) ──
     def _handle_command_streaming(self, frames):
-        """Stream le PCM au backend, décide la fin de tour EN LOCAL (Smart Turn),
-        puis joue la réponse streamée. Retourne (next_state, from_conversing) ou
+        """Stream le PCM au backend, qui relaie vers Deepgram Flux. C'est FLUX qui
+        décide la fin de tour (tolère les hésitations) et nous renvoie 'turn_end'.
+        Puis on joue la réponse streamée. Retourne (next_state, from_conversing) ou
         None si le WS échoue (→ l'appelant retombe sur l'ancien flux)."""
         url = stream_client.ws_url_from_http(config.CLOUD_BACKEND_URL)
         client = stream_client.StreamClient(url, config.DEVICE_TOKEN)
         if not client.connect():
             return None                          # WS KO → fallback ancien flux
         play_beep()
-        logger.info("[stream] LISTENING (streaming + Smart Turn) — parlez…")
+        logger.info("[stream] LISTENING (Flux turn-taking) — parlez…")
         self._set_state("LISTENING")
         self.ambient.set_enabled(False)
         if getattr(self, "mic", None):
             self.mic.flush()
-        self.vad.reset()
-        turn: list[np.ndarray] = []              # audio accumulé du tour (int16)
-        started = False
-        silence_s = 0.0
         total_s = 0.0
-        wait_s = 0.0
-        for frame in frames:
+        turn_ended = False
+        while not turn_ended:
+            try:
+                frame = next(frames)
+            except StopIteration:
+                break
             total_s += FRAME_S
-            turn.append(frame)
             client.send_pcm(frame.tobytes())
-            if self.vad.is_speech(frame):
-                started = True
-                silence_s = 0.0
-            elif started:
-                silence_s += FRAME_S
-                if config.SMART_TURN_ENABLED and self.smart_turn.available:
-                    # Smart Turn (sémantique) — optionnel, OFF par défaut (trop pressé en FR).
-                    if silence_s >= config.STREAM_PAUSE_S:
-                        audio = np.concatenate(turn).astype(np.float32) / 32768.0
-                        p = self.smart_turn.predict_endpoint(audio)
-                        fini = p is None or p >= self.smart_turn.threshold
-                        logger.info("[stream] Smart Turn=%.2f @ %.1fs (seuil %.2f) → %s",
-                                    p if p is not None else -1.0, total_s,
-                                    self.smart_turn.threshold, "FINI" if fini else "continue")
-                        if fini:
-                            break
-                        silence_s = 0.0           # pause de réflexion → on continue
-                # Endpointing au SILENCE généreux (fiable) : on clôt quand tu te tais
-                # vraiment (STREAM_SILENCE_S). Tu peux hésiter sans être coupé.
-                elif silence_s >= config.STREAM_SILENCE_S:
-                    logger.info("[stream] fin de tour (silence %.1fs) — %.1fs", silence_s, total_s)
+            while True:                          # messages backend (non bloquant)
+                m = client.recv(timeout=0.0)
+                if m is None:
                     break
-            else:
-                wait_s += FRAME_S
-                if wait_s >= config.TARGET_WAIT_START_S:
-                    logger.info("[stream] aucune parole → abandon")
-                    client.send_cancel()
+                kind, data = m
+                if kind == "partial":
+                    self.last_transcript = data.get("text", "") or self.last_transcript
+                elif kind == "turn_end":
+                    self.last_transcript = data.get("transcript", "") or self.last_transcript
+                    logger.info("[stream] fin de tour (Flux) — %.1fs : %r",
+                                total_s, (data.get("transcript") or "")[:60])
+                    turn_ended = True
+                    break
+                elif kind in ("final", "error", "closed"):
                     client.close()
-                    return "IDLE", False
+                    return "CONVERSING", False    # tour vide / erreur → on revient
             if total_s >= config.CMD_MAX_S:
                 logger.info("[stream] cap %.0fs", config.CMD_MAX_S)
-                break
-        if not started:
-            client.send_cancel()
-            client.close()
-            return "IDLE", False
+                client.send_cancel()
+                client.close()
+                return "IDLE", False
+        # fin de tour → THINKING → on joue la réponse streamée
         self._set_state("THINKING")
-        client.send_eot()
         barge = self._play_streamed_response(client, frames)
         client.close()
         return ("IDLE", False) if barge == "stop" else ("CONVERSING", False)
