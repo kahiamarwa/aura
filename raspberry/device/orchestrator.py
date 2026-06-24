@@ -130,7 +130,8 @@ class Orchestrator:
         absent_s = 0.0
         wait_s = 0.0
         hop_voiced = False      # le VAD a-t-il vu de la parole sur le hop courant ?
-        self.vad.reset()        # état Silero propre pour cette commande
+        if config.ENDPOINT_VAD:
+            self.vad.reset()    # état Silero propre pour cette commande
 
         for frame in frames:
             chunks.append(frame)
@@ -139,7 +140,7 @@ class Orchestrator:
             hop += FRAME_S
             # VAD Silero à CHAQUE frame (modèle stateful) : robuste au bruit/ronflement,
             # là où l'énergie brute gardait l'enregistrement ouvert jusqu'au cap.
-            if self.vad.is_speech(frame):
+            if config.ENDPOINT_VAD and self.vad.is_speech(frame):
                 hop_voiced = True
 
             # Cap de sécurité absolu — coupe toujours
@@ -153,7 +154,8 @@ class Orchestrator:
             hop = 0.0
 
             win_rms = _rms(win)           # pour logs + _user_in_window
-            speaking = hop_voiced         # parole = décision VAD (pas l'énergie)
+            # parole = VAD (robuste bruit) OU énergie brute (ENDPOINT_VAD=0, connu-bon)
+            speaking = hop_voiced if config.ENDPOINT_VAD else (win_rms >= config.CMD_SILENCE_RMS)
             hop_voiced = False
             if not speaking:
                 present = False                         # VAD : silence (robuste au bruit)

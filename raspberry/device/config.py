@@ -119,6 +119,9 @@ WAKE_COOLDOWN_S = 1.5
 SILERO_VAD_PATH = Path(os.getenv("SILERO_VAD_PATH", OPENWAKE_DIR.parent / "device" / "silero_vad.onnx"))
 VAD_FRAME_SIZE = 512            # 32 ms à 16 kHz (taille de frame Silero)
 VAD_PROB_THRESHOLD = float(os.getenv("VAD_PROB_THRESHOLD", "0.5"))   # proba parole (Silero) au-dessus = parole
+# 1 = endpointing piloté par Silero VAD ; 0 = ancien comportement ÉNERGIE (RMS).
+# Mets 0 si le VAD ne détecte plus ta parole (retour au connu-bon).
+ENDPOINT_VAD = os.getenv("ENDPOINT_VAD", "1") == "1"
 VAD_SPEECH_FRAMES = 2          # frames consécutives pour démarrer (~hystérésis)
 VAD_SILENCE_FRAMES = 20        # frames de silence pour clore (~0.6s à 32ms/frame)
 
