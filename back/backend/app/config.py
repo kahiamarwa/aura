@@ -25,9 +25,11 @@ class Settings(BaseSettings):
     DEVICE_TOKEN: str = ""
 
     # Rejeter une commande si le locuteur n'est pas l'utilisateur enrôlé (sécurité) ?
-    # ON : fiable sur une commande medium/longue (assez d'audio). Seul le wake word
-    # (audio court) était instable et reste non gardé. VERIFY_SPEAKER_ENFORCE=0 pour ouvrir à tous.
-    VERIFY_SPEAKER_ENFORCE: bool = True
+    # OFF par défaut : l'ECAPA backend rejette à tort le vrai utilisateur (score ~0)
+    # → bloquait des réponses légitimes. Le WAKE WORD est la garde (modèle Alexa) ;
+    # la voix reste AFFICHÉE (badge ✓/✗ + score) mais ne BLOQUE plus la réponse.
+    # VERIFY_SPEAKER_ENFORCE=1 pour re-bloquer (quand l'enrôlement sera fiabilisé).
+    VERIFY_SPEAKER_ENFORCE: bool = False
 
     # Seuil de confiance pour REJETER une phrase "pas pour Aura" (en mode suivi).
     # Plus BAS = filtre plus agressif (utile en milieu bruyant / discussions).
