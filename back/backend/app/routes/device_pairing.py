@@ -48,42 +48,49 @@ def _mint_user_jwt(user_id: str) -> str | None:
         return None
 
 
-def resolve_user_token(request: Request) -> str | None:
-    """JWT utilisateur pour ce device (forgé à la demande), avec cache.
+def user_token_from_device(device_token: str) -> str | None:
+    """device_token → JWT utilisateur forgé (avec cache). Réutilisable HTTP ET WebSocket.
 
-    device_token → user_id (table devices, service role) → JWT forgé.
-    Repli : header Authorization (rétrocompat dev). None si rien.
+    device_token → user_id (table devices, service role) → JWT forgé. None si rien.
     """
-    device_token = request.headers.get("x-device-token", "").strip()
-    if device_token:
-        cached = _jwt_cache.get(device_token)
-        if cached and time.time() < cached[1]:
-            return cached[0]
-        try:
-            svc = get_service_client()
-            r = (svc.table("devices").select("user_id")
-                 .eq("device_token", device_token).limit(1).execute())
-            if r.data and r.data[0].get("user_id"):
-                token = _mint_user_jwt(r.data[0]["user_id"])
-                if token:
-                    _jwt_cache[device_token] = (token, time.time() + _JWT_TTL - 120)
-                    if not cached:   # 1re résolution (pas à chaque appel caché)
-                        try:
-                            import datetime as _dt
-                            (svc.table("devices").update(
-                                {"last_seen_at": _dt.datetime.now(_dt.timezone.utc).isoformat()})
-                             .eq("device_token", device_token).execute())
-                        except Exception:
-                            pass
-                    return token
-                logger.error("[pair] mint JWT a échoué (SUPABASE_JWT_SECRET ?) pour user %s",
-                             r.data[0]["user_id"])
-            else:
-                logger.warning("[pair] device introuvable dans 'devices' (service role OK ? RLS ?) — rows=%d",
-                               len(r.data or []))
-        except Exception as e:
-            logger.error("[pair] resolve error: %s: %s", type(e).__name__, e)
-    # Repli rétrocompat : Authorization: Bearer <JWT>
+    device_token = (device_token or "").strip()
+    if not device_token:
+        return None
+    cached = _jwt_cache.get(device_token)
+    if cached and time.time() < cached[1]:
+        return cached[0]
+    try:
+        svc = get_service_client()
+        r = (svc.table("devices").select("user_id")
+             .eq("device_token", device_token).limit(1).execute())
+        if r.data and r.data[0].get("user_id"):
+            token = _mint_user_jwt(r.data[0]["user_id"])
+            if token:
+                _jwt_cache[device_token] = (token, time.time() + _JWT_TTL - 120)
+                if not cached:   # 1re résolution (pas à chaque appel caché)
+                    try:
+                        import datetime as _dt
+                        (svc.table("devices").update(
+                            {"last_seen_at": _dt.datetime.now(_dt.timezone.utc).isoformat()})
+                         .eq("device_token", device_token).execute())
+                    except Exception:
+                        pass
+                return token
+            logger.error("[pair] mint JWT a échoué (SUPABASE_JWT_SECRET ?) pour user %s",
+                         r.data[0]["user_id"])
+        else:
+            logger.warning("[pair] device introuvable dans 'devices' (service role OK ? RLS ?) — rows=%d",
+                           len(r.data or []))
+    except Exception as e:
+        logger.error("[pair] resolve error: %s: %s", type(e).__name__, e)
+    return None
+
+
+def resolve_user_token(request: Request) -> str | None:
+    """JWT utilisateur pour ce device (HTTP). Repli : Authorization Bearer (dev)."""
+    token = user_token_from_device(request.headers.get("x-device-token", ""))
+    if token:
+        return token
     auth = request.headers.get("authorization", "")
     return auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else None
 

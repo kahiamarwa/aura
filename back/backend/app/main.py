@@ -17,7 +17,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(stream=open(sys.stdout.fileno(), "w", encoding="utf-8", closefd=False))],
 )
 
-from app.routes import activity, chat, contacts, conversations, device_converse, device_pairing, discussions, gemini_stt, health, intent_classifier, settings, speakers, stt_token, summaries, wakeword
+from app.routes import activity, chat, contacts, conversations, device_converse, device_pairing, device_stream, discussions, gemini_stt, health, intent_classifier, settings, speakers, stt_token, summaries, wakeword
 
 app = FastAPI(title="AURA POC Backend")
 
@@ -48,6 +48,7 @@ app.include_router(speakers.router)
 app.include_router(intent_classifier.router)
 app.include_router(device_converse.router)
 app.include_router(device_pairing.router)
+app.include_router(device_stream.router)   # chemin B : proxy WS streaming STT
 
 
 @app.on_event("startup")
