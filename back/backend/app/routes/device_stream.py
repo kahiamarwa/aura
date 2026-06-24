@@ -31,9 +31,47 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.config import get_settings
 from app.routes.device_pairing import user_token_from_device
+from app.routes.device_converse import (
+    _resolve_conversation, _persist_msg, _run_agent, _strip_sources,
+)
+from app.services import memory_service
+from app.services.tts_service import stream_tts
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def _run_eot_pipeline(ws, user_token, transcript, settings):
+    """EOT → intent (implicite) → LLM → TTS, streamé sur le WS device.
+
+    Réutilise la logique converse existante. Envoie d'abord la réponse texte
+    ({"type":"response"}), puis le MP3 en frames binaires, puis {"type":"audio_end"}.
+    """
+    import asyncio as _aio
+    import threading as _th
+    conv_id = await _resolve_conversation(user_token, transcript)
+    _th.Thread(target=_persist_msg, args=(user_token, conv_id, "user", transcript), daemon=True).start()
+    memories = await _aio.to_thread(memory_service.retrieve, user_token, transcript)
+    enriched = memories or None
+    response_text, attachments = await _run_agent(user_token, transcript, enriched, settings, conv_id)
+    response_text = (response_text or "").strip()
+    if not response_text:
+        await ws.send_json({"type": "final", "transcript": transcript, "response": ""})
+        return
+    _th.Thread(target=_persist_msg,
+               args=(user_token, conv_id, "assistant", response_text, attachments),
+               daemon=True).start()
+    await ws.send_json({"type": "response", "transcript": transcript,
+                        "text": response_text, "conversation_id": conv_id})
+    # TTS → MP3 streamé en binaire (la voix ne lit pas les « Sources »)
+    voice_text = _strip_sources(response_text)
+    try:
+        async for mp3 in stream_tts(text=voice_text, voice_id=settings.ELEVENLABS_VOICE_ID,
+                                    api_key=settings.ELEVENLABS_API_KEY):
+            await ws.send_bytes(mp3)
+    except Exception as e:
+        logger.warning("[stream] TTS error: %s", e)
+    await ws.send_json({"type": "audio_end"})
 
 _ELEVEN_WS = ("wss://api.elevenlabs.io/v1/speech-to-text/realtime"
               "?model_id=scribe_v2_realtime&commit_strategy=manual")
@@ -95,10 +133,13 @@ async def device_stream(ws: WebSocket):
                     committed = msg.get("text", "") or committed
                     if eot_pending:
                         eot_pending = False
-                        transcript = committed.strip()
+                        transcript = (committed or "").strip()
+                        committed = ""
                         logger.info("[stream] EOT → transcript=%r", transcript[:80])
-                        # TODO étape 1b : intent → LLM → TTS et streamer le MP3 en retour.
-                        await ws.send_json({"type": "final", "transcript": transcript})
+                        if transcript:
+                            await _run_eot_pipeline(ws, user_token, transcript, settings)
+                        else:
+                            await ws.send_json({"type": "final", "transcript": "", "response": ""})
                     else:
                         await ws.send_json({"type": "committed", "text": committed})
                 elif mt in ("error", "auth_error", "input_error", "quota_exceeded", "rate_limited"):
