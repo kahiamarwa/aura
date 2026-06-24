@@ -15,9 +15,12 @@ import numpy as np
 
 try:
     import onnxruntime as ort
-    from onnxruntime.quantization import quantize_dynamic, QuantType
 except ImportError:
     raise SystemExit("onnxruntime manquant → pip install onnxruntime")
+try:
+    from onnxruntime.quantization import quantize_dynamic, QuantType
+except ImportError:
+    raise SystemExit("La quantification a besoin du paquet 'onnx' → pip install onnx")
 
 
 def _find_fp32() -> str:
