@@ -29,6 +29,8 @@ from .speaker import TargetSpeaker
 from .audio_io import MicStream, Player, play_beep
 from .context import AmbientContext
 from .led_controller import LedController
+from .smart_turn import SmartTurn
+from . import stream_client
 from . import cloud
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -49,6 +51,7 @@ class Orchestrator:
         self.player = Player()
         self.ambient = AmbientContext()
         self.led = LedController()       # LED d'états (no-op si LED_ENABLED=0)
+        self.smart_turn = SmartTurn()    # détection de tour (chemin B ; no-op si OFF)
         self.state = "IDLE"
         self.last_transcript = ""        # dernière commande (pour l'affichage live)
         self._stop_watch = False
@@ -306,6 +309,98 @@ class Orchestrator:
             return "LISTENING", True     # ta voix par-dessus = tu enchaînes
         return "CONVERSING", False       # fin normale → fenêtre de conversation
 
+    # ── Chemin B : flux STREAMING (Silero VAD + Smart Turn → EOT local) ──
+    def _handle_command_streaming(self, frames):
+        """Stream le PCM au backend, décide la fin de tour EN LOCAL (Smart Turn),
+        puis joue la réponse streamée. Retourne (next_state, from_conversing) ou
+        None si le WS échoue (→ l'appelant retombe sur l'ancien flux)."""
+        url = stream_client.ws_url_from_http(config.CLOUD_BACKEND_URL)
+        client = stream_client.StreamClient(url, config.DEVICE_TOKEN)
+        if not client.connect():
+            return None                          # WS KO → fallback ancien flux
+        play_beep()
+        logger.info("[stream] LISTENING (streaming + Smart Turn) — parlez…")
+        self._set_state("LISTENING")
+        self.ambient.set_enabled(False)
+        if getattr(self, "mic", None):
+            self.mic.flush()
+        self.vad.reset()
+        turn: list[np.ndarray] = []              # audio accumulé du tour (int16)
+        started = False
+        silence_s = 0.0
+        total_s = 0.0
+        wait_s = 0.0
+        for frame in frames:
+            total_s += FRAME_S
+            turn.append(frame)
+            client.send_pcm(frame.tobytes())
+            if self.vad.is_speech(frame):
+                started = True
+                silence_s = 0.0
+            elif started:
+                silence_s += FRAME_S
+                if silence_s >= config.STREAM_PAUSE_S:    # pause → fin de tour ?
+                    audio = np.concatenate(turn).astype(np.float32) / 32768.0
+                    p = self.smart_turn.predict_endpoint(audio)
+                    if p is None or p >= self.smart_turn.threshold:
+                        logger.info("[stream] fin de tour (Smart Turn=%.2f) — %.1fs",
+                                    p if p is not None else -1.0, total_s)
+                        break
+                    silence_s = 0.0               # pause de réflexion → on continue
+            else:
+                wait_s += FRAME_S
+                if wait_s >= config.TARGET_WAIT_START_S:
+                    logger.info("[stream] aucune parole → abandon")
+                    client.send_cancel()
+                    client.close()
+                    return "IDLE", False
+            if total_s >= config.CMD_MAX_S:
+                logger.info("[stream] cap %.0fs", config.CMD_MAX_S)
+                break
+        if not started:
+            client.send_cancel()
+            client.close()
+            return "IDLE", False
+        self._set_state("THINKING")
+        client.send_eot()
+        barge = self._play_streamed_response(client, frames)
+        client.close()
+        return ("IDLE", False) if barge == "stop" else ("CONVERSING", False)
+
+    def _play_streamed_response(self, client, frames) -> str | None:
+        """Reçoit la réponse (texte + MP3) du backend et la joue, avec « Stop Aura »."""
+        self._spoke = False
+        self.player.start_stream()
+        done = False
+        while not done:
+            while True:                          # draine tout l'arrivé (non bloquant)
+                m = client.recv(timeout=0.0)
+                if m is None:
+                    break
+                kind, data = m
+                if kind == "response":
+                    self.last_transcript = data.get("transcript", "") or self.last_transcript
+                    logger.info("[stream] réponse: %s", (data.get("text") or "")[:80])
+                    self._set_state("SPEAKING")
+                    self._spoke = True
+                elif kind == "audio":
+                    self.player.feed(data)
+                elif kind in ("audio_end", "final", "error", "closed"):
+                    done = True
+                    break
+            if done:
+                break
+            try:
+                frame = next(frames)             # « Stop Aura » pendant la lecture
+            except StopIteration:
+                break
+            if self.wake.process(frame) == "interrupt":
+                logger.info("[stream] STOP — coupure")
+                self.player.stop()
+                return "stop"
+        self.player.end_stream()
+        return None
+
     # ── Teardown déterministe du SPEAKING (aucune fuite socket/zombie) ──
     def _teardown_speak(self, t, stop, res):
         stop.set()
@@ -489,13 +584,22 @@ class Orchestrator:
                         self._set_state("LISTENING")
 
                 elif self.state == "LISTENING":
-                    pcm = self._record_command(frames)
-                    if pcm is None:
-                        wasted += 1
-                        next_state, from_conversing = ("CONVERSING", False) if from_conversing else ("IDLE", False)
-                    else:
-                        next_state, from_conversing = self._handle_command(pcm, from_conversing, frames)
+                    # Chemin B : flux streaming (Smart Turn) si activé ET dispo.
+                    streamed = None
+                    if config.STREAMING_MODE and self.smart_turn.available:
+                        streamed = self._handle_command_streaming(frames)
+                    if streamed is not None:
+                        next_state, from_conversing = streamed
                         wasted = 0 if getattr(self, "_spoke", False) else wasted + 1
+                    else:
+                        # Ancien flux (fallback : WS KO, ou STREAMING_MODE off)
+                        pcm = self._record_command(frames)
+                        if pcm is None:
+                            wasted += 1
+                            next_state, from_conversing = ("CONVERSING", False) if from_conversing else ("IDLE", False)
+                        else:
+                            next_state, from_conversing = self._handle_command(pcm, from_conversing, frames)
+                            wasted = 0 if getattr(self, "_spoke", False) else wasted + 1
                     self._set_state(next_state)
 
                 elif self.state == "CONVERSING":
