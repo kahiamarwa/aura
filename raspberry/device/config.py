@@ -127,6 +127,13 @@ VAD_PROB_THRESHOLD = float(os.getenv("VAD_PROB_THRESHOLD", "0.5"))   # proba par
 # 1 = endpointing piloté par Silero VAD ; 0 = ancien comportement ÉNERGIE (RMS).
 # Mets 0 si le VAD ne détecte plus ta parole (retour au connu-bon).
 ENDPOINT_VAD = os.getenv("ENDPOINT_VAD", "1") == "1"
+
+# ── Smart Turn v3 — détection de fin de tour (chemin B, façon Alexa) ──
+# Modèle audio local (BSD-2) qui décide « l'utilisateur a fini ? » aux pauses VAD.
+# OFF par défaut (chantier en cours). pip install onnxruntime huggingface_hub.
+SMART_TURN_ENABLED = os.getenv("SMART_TURN_ENABLED", "0") == "1"
+SMART_TURN_MODEL = os.getenv("SMART_TURN_MODEL", "")          # vide → download HF (variante CPU int8)
+SMART_TURN_THRESHOLD = float(os.getenv("SMART_TURN_THRESHOLD", "0.5"))   # proba > seuil = fini
 VAD_SPEECH_FRAMES = 2          # frames consécutives pour démarrer (~hystérésis)
 VAD_SILENCE_FRAMES = 20        # frames de silence pour clore (~0.6s à 32ms/frame)
 
