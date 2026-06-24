@@ -49,12 +49,15 @@ context.modules = [
       library.name  = aec/libspa-aec-webrtc
       node.latency  = 1024/48000   # ~21 ms : bon compromis barge-in/qualité
       aec.args = {
-        webrtc.gain_control      = true
-        webrtc.noise_suppression = true
-        webrtc.high_pass_filter  = true
+        # ÉCHO SEULEMENT : on NE touche PAS la voix (le device a son propre VAD +
+        # reconnaissance locuteur). NS/AGC/voice_detection altéraient l'audio →
+        # le VAD ne reconnaissait plus la parole → coupures/boucles.
+        webrtc.gain_control      = false
+        webrtc.noise_suppression = false
+        webrtc.high_pass_filter  = false
+        webrtc.voice_detection   = false
         webrtc.extended_filter   = true
         webrtc.delay_agnostic    = true
-        webrtc.voice_detection   = true
       }
       capture.props = {
         node.name   = "echo-cancel-capture"
