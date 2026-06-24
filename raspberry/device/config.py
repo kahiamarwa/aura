@@ -65,6 +65,13 @@ FRAME_SAMPLES = 1280         # 80 ms à 16 kHz (taille de frame openWakeWord)
 # n'est pas fait). L'alignement temporel écho est géré par l'OS (éprouvé).
 AEC_ENABLED = os.getenv("AEC_ENABLED", "0") == "1"
 
+# ── LED d'états (KY-016 RGB sur GPIO) ────────────────────────────────
+# Reflète l'état d'Aura sur une LED physique (comme l'orbe). Optionnel.
+LED_ENABLED = os.getenv("LED_ENABLED", "0") == "1"
+LED_R_PIN = int(os.getenv("LED_R_PIN", "13"))   # broche physique 33
+LED_G_PIN = int(os.getenv("LED_G_PIN", "19"))   # broche physique 35
+LED_B_PIN = int(os.getenv("LED_B_PIN", "26"))   # broche physique 37
+
 # ── Mute logiciel à distance (mode confidentiel, piloté par le web) ──
 # Le device interroge le cloud tous les MUTE_POLL_S s ; si muté → coupe micro +
 # ambiant (rien n'est envoyé au cloud). MUTE_POLL=0 désactive le poll.

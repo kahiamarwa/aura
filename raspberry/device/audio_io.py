@@ -46,8 +46,18 @@ class MicStream:
     On capture alors au taux supporté (48 kHz) et on sous-échantillonne en 16 kHz.
     """
 
-    def __init__(self):
+    def __init__(self, on_lost=None, on_back=None):
+        # Callbacks optionnels : micro perdu (USB coupé) / micro de retour → LED.
         self._q: "queue.Queue[bytes]" = queue.Queue()
+        self._on_lost = on_lost
+        self._on_back = on_back
+        self._lost = False
+        self._stream = None
+        self._open()
+
+    def _open(self):
+        """(Re)crée le flux sounddevice sur le périphérique courant (réutilisé au
+        rebranchement USB). Peut lever si le micro est absent → géré par l'appelant."""
         self._native_rate = self._pick_rate()
         ratio = self._native_rate // config.SAMPLE_RATE if self._native_rate >= config.SAMPLE_RATE else 1
         blocksize = config.FRAME_SAMPLES * max(ratio, 1)
@@ -59,6 +69,21 @@ class MicStream:
             device=config.INPUT_DEVICE,
             callback=self._cb,
         )
+
+    def _try_reopen(self) -> bool:
+        """Tente de rouvrir le micro (USB rebranché). True si le flux redémarre."""
+        try:
+            if self._stream:
+                self._stream.stop()
+                self._stream.close()
+        except Exception:
+            pass
+        try:
+            self._open()
+            self._stream.start()
+            return True
+        except Exception:
+            return False
 
     def _pick_rate(self) -> int:
         """16 kHz si supporté, sinon 48 kHz (puis sous-échantillonnage ×3)."""
@@ -87,8 +112,12 @@ class MicStream:
         return self
 
     def __exit__(self, *a):
-        self._stream.stop()
-        self._stream.close()
+        try:
+            if self._stream:
+                self._stream.stop()
+                self._stream.close()
+        except Exception:
+            pass
 
     def flush(self):
         """Vide le backlog audio accumulé pendant un traitement long (ex: appel
@@ -103,17 +132,36 @@ class MicStream:
     def frames(self):
         """Générateur infini de frames int16 16 kHz (np.ndarray de FRAME_SAMPLES).
 
-        Watchdog : si le micro ne fournit plus rien (USB débranché), on log un
-        warning au lieu de bloquer SILENCIEUSEMENT pour toujours sur get().
+        Auto-récup USB : si le micro disparaît (interrupteur/USB coupé), on le
+        signale (callback → LED rouge) et on tente de le ROUVRIR en boucle ; dès
+        qu'il revient, l'audio reprend tout seul (callback → LED restaurée). Pas
+        de blocage silencieux ni de redémarrage manuel d'Aura.
         """
         empties = 0
         while True:
             try:
-                raw = self._q.get(timeout=5.0)
+                raw = self._q.get(timeout=2.0)
             except queue.Empty:
                 empties += 1
-                logger.warning("[mic] aucun audio depuis %ds — micro déconnecté ?", 5 * empties)
+                if empties >= 2 and not self._lost:          # ~4s sans audio → perdu
+                    self._lost = True
+                    logger.warning("[mic] micro perdu (USB coupé ?) — j'attends son retour")
+                    if self._on_lost:
+                        try:
+                            self._on_lost()
+                        except Exception:
+                            pass
+                if self._lost:
+                    self._try_reopen()                       # retente le rebranchement
                 continue
+            if self._lost:                                   # l'audio est revenu
+                self._lost = False
+                logger.info("[mic] micro de retour ✓")
+                if self._on_back:
+                    try:
+                        self._on_back()
+                    except Exception:
+                        pass
             empties = 0
             frame = np.frombuffer(raw, dtype=np.int16)
             if self._native_rate != config.SAMPLE_RATE:

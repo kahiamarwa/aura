@@ -28,6 +28,7 @@ from .vad import VAD
 from .speaker import TargetSpeaker
 from .audio_io import MicStream, Player, play_beep
 from .context import AmbientContext
+from .led_controller import LedController
 from . import cloud
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -47,6 +48,7 @@ class Orchestrator:
         self.target = TargetSpeaker()
         self.player = Player()
         self.ambient = AmbientContext()
+        self.led = LedController()       # LED d'états (no-op si LED_ENABLED=0)
         self.state = "IDLE"
         self.last_transcript = ""        # dernière commande (pour l'affichage live)
         self._stop_watch = False
@@ -63,6 +65,7 @@ class Orchestrator:
         """
         self.state = new
         self._seq += 1
+        self.led.set_state(new)          # LED physique suit l'état (comme l'orbe)
         tr = transcript if transcript is not None else (
             self.last_transcript if new in ("THINKING", "SPEAKING") else "")
         try:
@@ -440,7 +443,9 @@ class Orchestrator:
         if config.MUTE_POLL_S > 0:
             threading.Thread(target=self._mute_poller, daemon=True).start()  # mute distant (mode confidentiel)
         logger.info("Aura prêt. Dites « Dis Aura ».")
-        with MicStream() as mic:
+        # Micro perdu (USB coupé) → LED rouge ; retour → on restaure l'état courant.
+        with MicStream(on_lost=lambda: self.led.set_state("MUTED"),
+                       on_back=lambda: self.led.set_state(self.state)) as mic:
             self.mic = mic
             frames = mic.frames()
             self._set_state("IDLE")
