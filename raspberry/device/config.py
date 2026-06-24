@@ -168,7 +168,7 @@ MAX_WASTED = int(os.getenv("MAX_WASTED", "3"))        # cycles sans réponse →
 MAX_CONV_TURNS = int(os.getenv("MAX_CONV_TURNS", "8"))  # tours max en conversation → IDLE
 
 # ── Conversation continue (parité web) ───────────────────────────────
-CONVERSATION_WINDOW_S = 12.0   # fenêtre pour répondre sans wake word (conversing)
+CONVERSATION_WINDOW_S = float(os.getenv("CONVERSATION_WINDOW_S", "8.0"))   # fenêtre suivi sans wake word
 CONVERSING_RMS = float(os.getenv("CONVERSING_RMS", "350"))   # seuil parole en conversing
 SPEAKING_RMS = float(os.getenv("SPEAKING_RMS", "600"))       # seuil barge-in pendant TTS (> écho)
 FOLLOWUP_SPEECH_FRAMES = 3     # frames consécutives pour déclencher un follow-up/barge-in
