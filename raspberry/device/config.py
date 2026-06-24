@@ -141,6 +141,10 @@ SMART_TURN_THRESHOLD = float(os.getenv("SMART_TURN_THRESHOLD", "0.5"))   # proba
 # OFF par défaut → l'ancien flux (cloud.converse) reste le fallback.
 STREAMING_MODE = os.getenv("STREAMING_MODE", "0") == "1"
 STREAM_PAUSE_S = float(os.getenv("STREAM_PAUSE_S", "0.4"))   # silence avant de tester Smart Turn
+# Endpointing au SILENCE en mode streaming (quand Smart Turn est OFF) : durée de
+# silence tolérée avant de clore le tour. Généreux (1,5s) → tu peux hésiter sans
+# être coupé. C'est l'approche FIABLE (Smart Turn v3 est trop pressé en français).
+STREAM_SILENCE_S = float(os.getenv("STREAM_SILENCE_S", "1.5"))
 VAD_SPEECH_FRAMES = 2          # frames consécutives pour démarrer (~hystérésis)
 VAD_SILENCE_FRAMES = 20        # frames de silence pour clore (~0.6s à 32ms/frame)
 

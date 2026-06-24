@@ -339,16 +339,23 @@ class Orchestrator:
                 silence_s = 0.0
             elif started:
                 silence_s += FRAME_S
-                if silence_s >= config.STREAM_PAUSE_S:    # pause → fin de tour ?
-                    audio = np.concatenate(turn).astype(np.float32) / 32768.0
-                    p = self.smart_turn.predict_endpoint(audio)
-                    fini = p is None or p >= self.smart_turn.threshold
-                    logger.info("[stream] Smart Turn=%.2f @ %.1fs (seuil %.2f) → %s",
-                                p if p is not None else -1.0, total_s,
-                                self.smart_turn.threshold, "FINI" if fini else "continue")
-                    if fini:
-                        break
-                    silence_s = 0.0               # pause de réflexion → on continue
+                if config.SMART_TURN_ENABLED and self.smart_turn.available:
+                    # Smart Turn (sémantique) — optionnel, OFF par défaut (trop pressé en FR).
+                    if silence_s >= config.STREAM_PAUSE_S:
+                        audio = np.concatenate(turn).astype(np.float32) / 32768.0
+                        p = self.smart_turn.predict_endpoint(audio)
+                        fini = p is None or p >= self.smart_turn.threshold
+                        logger.info("[stream] Smart Turn=%.2f @ %.1fs (seuil %.2f) → %s",
+                                    p if p is not None else -1.0, total_s,
+                                    self.smart_turn.threshold, "FINI" if fini else "continue")
+                        if fini:
+                            break
+                        silence_s = 0.0           # pause de réflexion → on continue
+                # Endpointing au SILENCE généreux (fiable) : on clôt quand tu te tais
+                # vraiment (STREAM_SILENCE_S). Tu peux hésiter sans être coupé.
+                elif silence_s >= config.STREAM_SILENCE_S:
+                    logger.info("[stream] fin de tour (silence %.1fs) — %.1fs", silence_s, total_s)
+                    break
             else:
                 wait_s += FRAME_S
                 if wait_s >= config.TARGET_WAIT_START_S:
@@ -586,9 +593,9 @@ class Orchestrator:
                         self._set_state("LISTENING")
 
                 elif self.state == "LISTENING":
-                    # Chemin B : flux streaming (Smart Turn) si activé ET dispo.
+                    # Chemin B : flux streaming (silence généreux, ou Smart Turn si activé).
                     streamed = None
-                    if config.STREAMING_MODE and self.smart_turn.available:
+                    if config.STREAMING_MODE:
                         streamed = self._handle_command_streaming(frames)
                     if streamed is not None:
                         next_state, from_conversing = streamed
