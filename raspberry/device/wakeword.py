@@ -38,6 +38,13 @@ class WakeWord:
         """Retourne 'activate', 'interrupt' ou None pour une frame de 1280 samples."""
         now = time.time()
         preds = self.model.predict(frame_int16)
+        # Calibration : logge le pic réel (même sous le seuil) → savoir si le seuil
+        # est trop haut (pic ~0.45) ou le modèle nul (pic ~0.05). À couper en prod.
+        if config.WAKE_DEBUG:
+            name = max(preds, key=preds.get)
+            if preds[name] > 0.1:
+                logger.info("[wake] pic=%.3f (%s) seuil=%.2f", preds[name], name,
+                            self.thresholds.get(name, 0.5))
         if now - self._last < self.cooldown:
             return None
         for name, score in preds.items():

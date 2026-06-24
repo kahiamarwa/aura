@@ -104,10 +104,15 @@ OPENWAKE_DIR = Path(os.getenv("OPENWAKE_DIR", _REPO_ROOT / "openwake"))
 ACTIVATE_MODEL = os.getenv("ACTIVATE_MODEL", "Aura_test.onnx")  # "Dis Aura"
 INTERRUPT_MODEL = os.getenv("INTERRUPT_MODEL", "stop_aura.onnx")  # "Stop Aura"
 WAKE_THRESHOLDS = {
-    Path(ACTIVATE_MODEL).stem: float(os.getenv("ACTIVATE_THRESHOLD", "0.6")),
+    # 0.4 (était 0.6) : « Dis Aura » dépassait rarement 0.6 → 3-4 essais. Affiner
+    # avec WAKE_DEBUG=1 (qui logge le pic réel) puis figer au point de séparation.
+    Path(ACTIVATE_MODEL).stem: float(os.getenv("ACTIVATE_THRESHOLD", "0.4")),
     # stop_aura plus strict : il faux-déclenche sur la parole ambiante
     Path(INTERRUPT_MODEL).stem: float(os.getenv("INTERRUPT_THRESHOLD", "0.85")),
 }
+# WAKE_DEBUG=1 : logge le pic de score du wake word à CHAQUE frame (>0.1) pour
+# calibrer le seuil empiriquement. À couper en prod (verbeux).
+WAKE_DEBUG = os.getenv("WAKE_DEBUG", "0") == "1"
 # Gate vocal sur le wake word : OFF par défaut. La vérif ECAPA sur l'audio court
 # du wake word est trop instable (rejette le vrai utilisateur ~0.23). On répond à
 # tout le monde (comme Alexa) et on mise sur le traitement du bruit. WAKE_SPEAKER_GATE=1 pour réactiver.
@@ -135,7 +140,7 @@ CMD_MIN_SPEECH_S = 0.3        # parole min pour considérer une vraie commande
 # ON : marche bien sur une commande medium/longue (assez d'audio pour identifier
 # l'utilisateur). Seul le wake word (audio court 1,5s) était instable → lui seul
 # est désactivé (WAKE_SPEAKER_GATE). TARGET_ENDPOINTING=0 pour repasser énergie/VAD.
-TARGET_ENDPOINTING = os.getenv("TARGET_ENDPOINTING", "1") == "1"
+TARGET_ENDPOINTING = os.getenv("TARGET_ENDPOINTING", "0") == "1"
 # L'enceinte s'arrête quand TA voix s'arrête, en ignorant les autres voix.
 TARGET_WINDOW_S = 1.5          # fenêtre glissante pour décider "c'est lui ?"
 TARGET_HOP_S = 0.4            # cadence de décision (toutes les 0.4 s)
@@ -159,7 +164,7 @@ SEMANTIC_MAX_S = 15.0          # au-delà → on traite (cap de sécurité)
 TARGET_WAIT_CONTINUE_S = 3.0   # délai d'attente de la suite après une pause de réflexion
 
 # ── Gardes anti-boucle (le device revient TOUJOURS à IDLE) ───────────
-MAX_WASTED = int(os.getenv("MAX_WASTED", "2"))        # cycles sans réponse → IDLE
+MAX_WASTED = int(os.getenv("MAX_WASTED", "3"))        # cycles sans réponse → IDLE
 MAX_CONV_TURNS = int(os.getenv("MAX_CONV_TURNS", "8"))  # tours max en conversation → IDLE
 
 # ── Conversation continue (parité web) ───────────────────────────────

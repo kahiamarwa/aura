@@ -154,24 +154,21 @@ class Orchestrator:
             hop = 0.0
 
             win_rms = _rms(win)           # pour logs + _user_in_window
-            # parole = VAD (robuste bruit) OU énergie brute (ENDPOINT_VAD=0, connu-bon)
-            speaking = hop_voiced if config.ENDPOINT_VAD else (win_rms >= config.CMD_SILENCE_RMS)
+            # Parole = VAD (robuste bruit) OU énergie franche (filet de sécurité :
+            # si Silero hésite/absent ou si l'AEC baisse le niveau, rms>=seuil suffit).
+            speaking = (config.ENDPOINT_VAD and hop_voiced) or (win_rms >= config.CMD_SILENCE_RMS)
             hop_voiced = False
             if not speaking:
-                present = False                         # VAD : silence (robuste au bruit)
-            elif use_target and len(win) >= min_win:
-                is_user, score = self.target.is_target(win)
-                if is_user is None:                     # modèle indispo → repli énergie
-                    use_target = False
-                    present = speaking
-                elif not started:
-                    present = bool(is_user)             # DÉMARRAGE strict (c'est bien lui ?)
-                else:
-                    # DÉMARRÉ : on garde tant qu'il PARLE et que ce n'est pas
-                    # CLAIREMENT un autre (sa voix varie 0.2–0.5 → on ne le coupe pas).
-                    present = speaking and (score >= config.TARGET_KEEP_THRESHOLD)
+                present = False                         # ni VAD ni énergie → silence
+            elif use_target and started and len(win) >= min_win:
+                # On NE bloque PAS le DÉMARRAGE sur l'identité (ECAPA court instable →
+                # coupait à 2s). On démarre sur la PAROLE ; l'identité est vérifiée
+                # côté cloud. Une fois démarré, on garde tant qu'il parle (KEEP=-1.0
+                # par défaut → ne coupe jamais sur le score).
+                _, score = self.target.is_target(win)
+                present = speaking and (score >= config.TARGET_KEEP_THRESHOLD)
             else:
-                present = speaking
+                present = speaking                      # démarrage + cas sans ECAPA
 
             if present:
                 if not started:
