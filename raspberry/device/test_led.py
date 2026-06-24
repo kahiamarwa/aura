@@ -2,10 +2,10 @@
 """Test standalone de la LED RGB KY-016 sur le GPIO du Raspberry Pi.
 
 Câblage (BCM) — ÉDITE ces 3 lignes si tu as branché sur d'autres broches :
-    R  -> GPIO17 (broche physique 11)
-    G  -> GPIO27 (broche physique 13)
-    B  -> GPIO22 (broche physique 15)
-    GND-> GND    (broche physique 9, 6, 14…)
+    R  -> GPIO13 (broche physique 33)
+    G  -> GPIO19 (broche physique 35)
+    B  -> GPIO26 (broche physique 37)
+    GND-> GND    (broche physique 39)
 
 Prérequis :  pip install gpiozero lgpio
 Lancer    :  python device/test_led.py
@@ -13,9 +13,9 @@ Le KY-016 a des résistances intégrées (151 = 150Ω) → branchement direct, O
 """
 from time import sleep
 
-RED_PIN = 17
-GREEN_PIN = 27
-BLUE_PIN = 22
+RED_PIN = 13
+GREEN_PIN = 19
+BLUE_PIN = 26
 
 try:
     from gpiozero import RGBLED
