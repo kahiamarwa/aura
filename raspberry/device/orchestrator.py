@@ -342,9 +342,11 @@ class Orchestrator:
                 if silence_s >= config.STREAM_PAUSE_S:    # pause → fin de tour ?
                     audio = np.concatenate(turn).astype(np.float32) / 32768.0
                     p = self.smart_turn.predict_endpoint(audio)
-                    if p is None or p >= self.smart_turn.threshold:
-                        logger.info("[stream] fin de tour (Smart Turn=%.2f) — %.1fs",
-                                    p if p is not None else -1.0, total_s)
+                    fini = p is None or p >= self.smart_turn.threshold
+                    logger.info("[stream] Smart Turn=%.2f @ %.1fs (seuil %.2f) → %s",
+                                p if p is not None else -1.0, total_s,
+                                self.smart_turn.threshold, "FINI" if fini else "continue")
+                    if fini:
                         break
                     silence_s = 0.0               # pause de réflexion → on continue
             else:
