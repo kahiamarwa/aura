@@ -85,6 +85,26 @@ class MicStream:
         except Exception:
             return False
 
+    def _mark_lost(self, reason: str):
+        if not self._lost:
+            self._lost = True
+            logger.warning("[mic] micro perdu (%s) — LED rouge, j'attends son retour", reason)
+            if self._on_lost:
+                try:
+                    self._on_lost()
+                except Exception:
+                    pass
+
+    def _mark_back(self):
+        if self._lost:
+            self._lost = False
+            logger.info("[mic] micro de retour ✓")
+            if self._on_back:
+                try:
+                    self._on_back()
+                except Exception:
+                    pass
+
     def _pick_rate(self) -> int:
         """16 kHz si supporté, sinon 48 kHz (puis sous-échantillonnage ×3)."""
         for rate in (config.SAMPLE_RATE, 48000, 44100):
@@ -138,32 +158,30 @@ class MicStream:
         de blocage silencieux ni de redémarrage manuel d'Aura.
         """
         empties = 0
+        flat = 0
+        _frame_s = config.FRAME_SAMPLES / config.SAMPLE_RATE     # ~0.08s par frame
+        flat_limit = max(10, int(config.MIC_DEAD_S / _frame_s))  # ~MIC_DEAD_S de silence plat
         while True:
             try:
                 raw = self._q.get(timeout=2.0)
             except queue.Empty:
+                # Cas SANS AEC : le flux meurt → plus aucune frame. → perdu + réouverture.
                 empties += 1
-                if empties >= 2 and not self._lost:          # ~4s sans audio → perdu
-                    self._lost = True
-                    logger.warning("[mic] micro perdu (USB coupé ?) — j'attends son retour")
-                    if self._on_lost:
-                        try:
-                            self._on_lost()
-                        except Exception:
-                            pass
-                if self._lost:
-                    self._try_reopen()                       # retente le rebranchement
+                if empties >= 2:
+                    self._mark_lost("USB coupé ?")
+                    self._try_reopen()
                 continue
-            if self._lost:                                   # l'audio est revenu
-                self._lost = False
-                logger.info("[mic] micro de retour ✓")
-                if self._on_back:
-                    try:
-                        self._on_back()
-                    except Exception:
-                        pass
             empties = 0
             frame = np.frombuffer(raw, dtype=np.int16)
+            # Cas AVEC AEC : PipeWire continue d'envoyer du SILENCE PLAT (min==max,
+            # que des zéros) quand l'USB est coupé. → micro mort, on passe en rouge.
+            if frame.size and int(frame.min()) == int(frame.max()):
+                flat += 1
+                if flat >= flat_limit:
+                    self._mark_lost("silence numérique — USB coupé ?")
+            else:
+                flat = 0
+                self._mark_back()                            # audio réel → micro de retour
             if self._native_rate != config.SAMPLE_RATE:
                 g = gcd(config.SAMPLE_RATE, self._native_rate)
                 frame = resample_poly(

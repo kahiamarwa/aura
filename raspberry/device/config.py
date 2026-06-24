@@ -72,6 +72,10 @@ LED_R_PIN = int(os.getenv("LED_R_PIN", "13"))   # broche physique 33
 LED_G_PIN = int(os.getenv("LED_G_PIN", "19"))   # broche physique 35
 LED_B_PIN = int(os.getenv("LED_B_PIN", "26"))   # broche physique 37
 
+# Détection « micro coupé » : durée de silence PLAT (que des zéros = source morte,
+# cas AEC où PipeWire envoie du silence au lieu de couper le flux) → LED rouge.
+MIC_DEAD_S = float(os.getenv("MIC_DEAD_S", "3.0"))
+
 # ── Mute logiciel à distance (mode confidentiel, piloté par le web) ──
 # Le device interroge le cloud tous les MUTE_POLL_S s ; si muté → coupe micro +
 # ambiant (rien n'est envoyé au cloud). MUTE_POLL=0 désactive le poll.
