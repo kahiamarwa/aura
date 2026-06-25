@@ -55,6 +55,33 @@ class LedController:
         except Exception as e:
             logger.debug("[LED] set_state(%s) error: %s", state, e)
 
+    def enroll(self, phase: str):
+        """Patterns LED dédiés à l'enrôlement vocal (guidage visuel) :
+        wait=blanc (prépare-toi), speak=vert clignotant (PARLE), pause=ambre,
+        process=bleu pulsé, done=vert ×3, fail=rouge ×3."""
+        if not self._led:
+            return
+        try:
+            if phase == "wait":
+                self._led.color = (0.6, 0.6, 0.6)
+            elif phase == "speak":
+                self._led.blink(on_time=0.4, off_time=0.25,
+                                on_color=(0.0, 1.0, 0.1), off_color=(0.0, 0.05, 0.0),
+                                background=True)
+            elif phase == "pause":
+                self._led.color = (0.45, 0.10, 0.0)
+            elif phase == "process":
+                self._led.pulse(fade_in_time=0.5, fade_out_time=0.5,
+                                on_color=(0.0, 0.2, 1.0), off_color=(0.0, 0.0, 0.08))
+            elif phase == "done":
+                self._led.blink(on_time=0.15, off_time=0.15,
+                                on_color=(0.0, 1.0, 0.1), off_color=_OFF, n=3, background=True)
+            elif phase == "fail":
+                self._led.blink(on_time=0.2, off_time=0.2,
+                                on_color=(1.0, 0.0, 0.0), off_color=_OFF, n=3, background=True)
+        except Exception as e:
+            logger.debug("[LED] enroll(%s) error: %s", phase, e)
+
     def off(self):
         if self._led:
             try:

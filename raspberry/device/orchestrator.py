@@ -32,6 +32,7 @@ from .led_controller import LedController
 from .smart_turn import SmartTurn
 from . import stream_client
 from . import cloud
+from . import enroll
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("orchestrator")
@@ -56,6 +57,8 @@ class Orchestrator:
         self.last_transcript = ""        # dernière commande (pour l'affichage live)
         self._stop_watch = False
         self._muted = threading.Event()  # mode confidentiel (mute logiciel à distance)
+        self._enroll_req = None          # demande d'enrôlement vocal poussée par le web
+        self._enroll_seen_id = None      # id déjà traité (anti re-déclenchement pendant l'enrôlement)
         self._seq = 0                    # ordre monotone des états (anti-désordre)
         self._state_q: "queue.Queue" = queue.Queue()
 
@@ -89,16 +92,32 @@ class Orchestrator:
                 continue
             cloud.push_state(state, tr, seq)
 
-    # ── Poll du mute distant (mode confidentiel piloté par le web) ───
+    def _push_enroll(self, transcript: str):
+        """Pousse l'état ENROLLING + avancement au web SANS toucher la LED (le flux
+        d'enrôlement pilote lui-même la LED avec ses patterns dédiés)."""
+        self.state = "ENROLLING"
+        self._seq += 1
+        try:
+            self._state_q.put_nowait(("ENROLLING", self._seq, transcript))
+        except Exception:
+            pass
+
+    # ── Poll du contrôle distant (mute + demande d'enrôlement, pilotés par le web) ──
     def _mute_poller(self):
-        """Interroge le cloud : le web a-t-il coupé le micro ? Met à jour l'event.
-        Erreur réseau → on ne change rien (on ne mute pas par accident)."""
+        """Interroge le cloud : mute ? demande d'enrôlement ? Met à jour event + flag.
+        Erreur réseau → on ne change rien (on ne mute/enrôle pas par accident)."""
         while not self._stop_watch:
             try:
-                if cloud.get_mute_state():
+                ctrl = cloud.get_control()
+                if ctrl.get("muted"):
                     self._muted.set()
                 else:
                     self._muted.clear()
+                req = ctrl.get("enroll_request")
+                # Dédup par id : la demande reste en base tant que l'upload n'a pas fini ;
+                # sans ça le poller la re-déclencherait en boucle pendant l'enrôlement.
+                if req and req.get("id") != self._enroll_seen_id and not self._muted.is_set():
+                    self._enroll_req = req      # consommé dans run()
             except Exception:
                 pass
             time.sleep(config.MUTE_POLL_S)
@@ -618,6 +637,19 @@ class Orchestrator:
                 if self.state == "MUTED":            # sortie de mute → reprise
                     logger.info("[mute] 🟢 micro réactivé")
                     self._set_state("IDLE")
+
+                # ── Enrôlement vocal demandé par le web (capture guidée par SON micro) ──
+                if self._enroll_req is not None:
+                    req, self._enroll_req = self._enroll_req, None
+                    self._enroll_seen_id = (req or {}).get("id")   # ne plus re-déclencher cette demande
+                    self.player.stop()
+                    try:
+                        enroll.run(self, frames, req)
+                    except Exception as e:
+                        logger.warning("[enroll] erreur: %s", e)
+                    from_conversing = False
+                    self._set_state("IDLE")
+                    continue
 
                 # Garde anti-boucle GLOBAL (couvre tous les chemins) — P8
                 if wasted >= config.MAX_WASTED and self.state != "IDLE":

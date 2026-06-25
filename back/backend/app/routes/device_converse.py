@@ -525,20 +525,21 @@ async def web_device_mute(raw_request: Request):
 
 @router.get("/api/device/control")
 async def device_control(raw_request: Request):
-    """Le device lit son contrôle distant (mute). Auth = DEVICE_TOKEN. Polled ~2s."""
+    """Le device lit son contrôle distant (mute + demande d'enrôlement). Auth = DEVICE_TOKEN.
+    Polled ~2s. enroll_request = {id, name, requested_at} ou null."""
     user_token = _check_device(raw_request)
     if not user_token:
-        return {"muted": False}
+        return {"muted": False, "enroll_request": None}
     try:
         supabase = get_supabase_client(user_token)
         user_id = get_user_id(supabase, user_token)
-        r = (supabase.table("device_status").select("muted")
+        r = (supabase.table("device_status").select("muted, enroll_request")
              .eq("user_id", user_id).limit(1).execute())
-        muted = bool(r.data and r.data[0].get("muted"))
-        return {"muted": muted}
+        row = r.data[0] if r.data else {}
+        return {"muted": bool(row.get("muted")), "enroll_request": row.get("enroll_request")}
     except Exception as e:
         logger.warning("[device] control read error: %s", e)
-        return {"muted": False}
+        return {"muted": False, "enroll_request": None}
 
 
 @router.post("/api/device/state")

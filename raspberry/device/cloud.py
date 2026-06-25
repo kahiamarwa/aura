@@ -167,15 +167,44 @@ def get_mute_state() -> bool:
     True → le device doit COUPER micro + ambiant (rien n'est envoyé au cloud).
     Réseau injoignable → False (on ne bloque pas le device sur une erreur réseau).
     """
+    return bool(get_control().get("muted"))
+
+
+def get_control() -> dict:
+    """Lit le contrôle distant (mute + demande d'enrôlement) en UN poll.
+    Renvoie {"muted": bool, "enroll_request": dict|None}. Réseau KO → tout neutre."""
+    neutral = {"muted": False, "enroll_request": None}
     if not (config.DEVICE_TOKEN or get_access_token()):
-        return False
+        return neutral
     try:
         r = _state_client.get(_url("/api/device/control"), headers=_headers())
         if r.status_code == 200:
-            return bool(r.json().get("muted"))
+            d = r.json()
+            return {"muted": bool(d.get("muted")), "enroll_request": d.get("enroll_request")}
     except Exception:
         pass
-    return False
+    return neutral
+
+
+def enroll(name: str, wav_bytes: bytes) -> dict:
+    """Envoie l'audio capté par l'enceinte → empreinte vocale (ECAPA côté serveur).
+    Renvoie {"ok": bool, "status": "ok"|"not_enough_speech"|"error", ...}."""
+    if not (config.DEVICE_TOKEN or get_access_token()):
+        return {"ok": False, "status": "error"}
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            r = client.post(_url("/api/device/enroll"), headers=_headers(),
+                            data={"name": name},
+                            files={"audio": ("enroll.wav", wav_bytes, "audio/wav")})
+        if r.status_code == 200:
+            return {"ok": True, "status": "ok", **r.json()}
+        if r.status_code == 422:
+            return {"ok": False, "status": "not_enough_speech"}
+        logger.warning("[enroll] HTTP %d", r.status_code)
+        return {"ok": False, "status": "error"}
+    except Exception as e:
+        logger.warning("[enroll] erreur réseau: %s", e)
+        return {"ok": False, "status": "error"}
 
 
 def converse(command_pcm: np.ndarray, from_conversing: bool, context: list[str],
