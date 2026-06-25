@@ -30,12 +30,23 @@ class WakeWord:
         self.names = list(self.model.models.keys())
         self.thresholds = config.WAKE_THRESHOLDS
         self.cooldown = config.WAKE_COOLDOWN_S
-        self._last = 0.0
+        # Cooldown PAR MODÈLE (et non global) : un faux « activate » sur l'écho TTS
+        # ne doit PAS désarmer « Stop Aura » (C2). Chaque modèle a son propre dernier-tir.
+        self._last = {n: 0.0 for n in self.names}
         self._interrupt_key = next((n for n in self.names if "stop" in n.lower()), None)
         logger.info("[WakeWord] models=%s thresholds=%s", self.names, self.thresholds)
 
+    def _emit(self, name: str, score: float, now: float) -> str:
+        self._last[name] = now
+        if self._interrupt_key and name == self._interrupt_key:
+            logger.info("[WakeWord] INTERRUPT (%s=%.2f)", name, score)
+            return "interrupt"
+        logger.info("[WakeWord] ACTIVATE (%s=%.2f)", name, score)
+        return "activate"
+
     def process(self, frame_int16: np.ndarray) -> str | None:
-        """Retourne 'activate', 'interrupt' ou None pour une frame de 1280 samples."""
+        """Retourne 'activate', 'interrupt' ou None pour une frame de 1280 samples.
+        Cooldown indépendant par modèle (un déclenchement d'un modèle ne bloque pas l'autre)."""
         now = time.time()
         preds = self.model.predict(frame_int16)
         # Calibration : logge le pic réel (même sous le seuil) → savoir si le seuil
@@ -45,14 +56,25 @@ class WakeWord:
             if preds[name] > 0.1:
                 logger.info("[wake] pic=%.3f (%s) seuil=%.2f", preds[name], name,
                             self.thresholds.get(name, 0.5))
-        if now - self._last < self.cooldown:
-            return None
         for name, score in preds.items():
-            if score >= self.thresholds.get(name, 0.5):
-                self._last = now
-                if self._interrupt_key and name == self._interrupt_key:
-                    logger.info("[WakeWord] INTERRUPT (%s=%.2f)", name, score)
-                    return "interrupt"
-                logger.info("[WakeWord] ACTIVATE (%s=%.2f)", name, score)
-                return "activate"
+            if score >= self.thresholds.get(name, 0.5) and now - self._last.get(name, 0.0) >= self.cooldown:
+                return self._emit(name, score, now)
+        return None
+
+    def process_interrupt_only(self, frame_int16: np.ndarray) -> str | None:
+        """N'évalue QUE « Stop Aura » (avec SON cooldown). À utiliser PENDANT la lecture
+        (SPEAKING) : ainsi l'écho TTS ne peut pas déclencher un faux « activate » qui
+        réarmerait le cooldown et masquerait un vrai « Stop Aura » (C2). 'interrupt' ou None."""
+        if not self._interrupt_key:
+            return None
+        now = time.time()
+        score = self.model.predict(frame_int16).get(self._interrupt_key, 0.0)
+        if config.WAKE_DEBUG and score > 0.1:
+            logger.info("[wake] (interrupt-only) pic=%.3f seuil=%.2f", score,
+                        self.thresholds.get(self._interrupt_key, 0.5))
+        if score >= self.thresholds.get(self._interrupt_key, 0.5) and \
+                now - self._last.get(self._interrupt_key, 0.0) >= self.cooldown:
+            self._last[self._interrupt_key] = now
+            logger.info("[WakeWord] INTERRUPT (%s=%.2f)", self._interrupt_key, score)
+            return "interrupt"
         return None

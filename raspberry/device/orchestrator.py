@@ -310,12 +310,15 @@ class Orchestrator:
         return "CONVERSING", False       # fin normale → fenêtre de conversation
 
     # ── Chemin B : flux STREAMING (Deepgram Flux décide la fin de tour) ──
-    def _handle_command_streaming(self, frames):
-        """Stream le PCM au backend, qui relaie vers Deepgram Flux. C'est FLUX qui
-        décide la fin de tour (tolère les hésitations) et nous renvoie 'turn_end'.
-        Puis on joue la réponse streamée. Retourne (next_state, from_conversing) ou
-        None si le WS échoue (→ l'appelant retombe sur l'ancien flux)."""
+    def _handle_command_streaming(self, frames, from_conversing: bool = False):
+        """Stream le PCM au backend → Deepgram Flux décide la fin de tour ('turn_end'),
+        puis joue la réponse streamée. Retourne (next_state, from_conversing), ou None si
+        le WS échoue OU si le backend renvoie une erreur AVANT tout progrès (→ l'appelant
+        retombe sur l'ancien flux fiable). from_conversing → gating intent côté backend (I5)."""
+        self._spoke = False                      # dette #9 : repart propre (garde MAX_WASTED)
         url = stream_client.ws_url_from_http(config.CLOUD_BACKEND_URL)
+        if from_conversing:
+            url += "?from_conversing=1"
         client = stream_client.StreamClient(url, config.DEVICE_TOKEN)
         if not client.connect():
             return None                          # WS KO → fallback ancien flux
@@ -325,14 +328,15 @@ class Orchestrator:
         self.ambient.set_enabled(False)
         if getattr(self, "mic", None):
             self.mic.flush()
-        total_s = 0.0
+        deadline = time.monotonic() + config.CMD_MAX_S   # C1 : deadline MURALE (indép. des frames)
+        progressed = False                               # I1 : reçu partial/turn_end ?
+        transcript = ""
         turn_ended = False
         while not turn_ended:
             try:
                 frame = next(frames)
             except StopIteration:
                 break
-            total_s += FRAME_S
             client.send_pcm(frame.tobytes())
             while True:                          # messages backend (non bloquant)
                 m = client.recv(timeout=0.0)
@@ -340,21 +344,32 @@ class Orchestrator:
                     break
                 kind, data = m
                 if kind == "partial":
+                    progressed = True
                     self.last_transcript = data.get("text", "") or self.last_transcript
                 elif kind == "turn_end":
-                    self.last_transcript = data.get("transcript", "") or self.last_transcript
-                    logger.info("[stream] fin de tour (Flux) — %.1fs : %r",
-                                total_s, (data.get("transcript") or "")[:60])
+                    progressed = True
+                    transcript = (data.get("transcript") or "").strip()
+                    self.last_transcript = transcript or self.last_transcript
+                    logger.info("[stream] fin de tour (Flux) — %r", transcript[:60])
                     turn_ended = True
                     break
                 elif kind in ("final", "error", "closed"):
                     client.close()
-                    return "CONVERSING", False    # tour vide / erreur → on revient
-            if total_s >= config.CMD_MAX_S:
-                logger.info("[stream] cap %.0fs", config.CMD_MAX_S)
+                    if not progressed:           # I1 : erreur AVANT tout transcript → repli fiable
+                        logger.warning("[stream] erreur backend précoce (%s) → fallback ancien flux", kind)
+                        return None
+                    return "CONVERSING", False    # tour réellement vide → on revient
+            if time.monotonic() >= deadline:     # C1 : ne dépend PAS de l'arrivée des frames
+                logger.info("[stream] cap %.0fs (deadline murale)", config.CMD_MAX_S)
                 client.send_cancel()
                 client.close()
                 return "IDLE", False
+        # turn_end à transcript VIDE → inutile de lancer mpg123 (dette #1/#12)
+        if not transcript:
+            logger.info("[stream] tour vide → CONVERSING (pas de lecture)")
+            client.send_cancel()
+            client.close()
+            return "CONVERSING", False
         # fin de tour → THINKING → on joue la réponse streamée
         self._set_state("THINKING")
         barge = self._play_streamed_response(client, frames)
@@ -362,39 +377,69 @@ class Orchestrator:
         return ("IDLE", False) if barge == "stop" else ("CONVERSING", False)
 
     def _play_streamed_response(self, client, frames) -> str | None:
-        """Reçoit la réponse (texte + MP3) du backend et la joue, avec « Stop Aura »."""
+        """Reçoit la réponse (texte + MP3) et la joue. L'audio est joué dans un THREAD
+        séparé (le feed bloque sur le backpressure de mpg123) pendant que la boucle principale
+        lit le micro EN CONTINU → « Stop Aura » détecté en temps réel (sans ce découplage, le
+        feed bloquant gelait le micro → Stop Aura raté même dit 4×). Pendant la lecture on
+        n'évalue QUE le modèle interrupt (process_interrupt_only) pour que l'écho ne réarme pas
+        le cooldown (C2). mpg123 démarré au 1er chunk audio (pas pendant THINKING — dette #1/#12).
+        Garde-fou : abandon si le backend reste muet trop longtemps."""
         self._spoke = False
-        self.player.start_stream()
+        self.ambient.set_enabled(False)
         if getattr(self, "mic", None):
-            self.mic.flush()        # audio FRAIS → « Stop Aura » jugé en temps réel (pas le backlog)
-        done = False
-        while not done:
-            while True:                          # draine tout l'arrivé (non bloquant)
-                m = client.recv(timeout=0.0)
-                if m is None:
-                    break
-                kind, data = m
-                if kind == "response":
-                    self.last_transcript = data.get("transcript", "") or self.last_transcript
-                    logger.info("[stream] réponse: %s", (data.get("text") or "")[:80])
-                    self._set_state("SPEAKING")
-                    self._spoke = True
-                elif kind == "audio":
-                    self.player.feed(data)
-                elif kind in ("audio_end", "final", "error", "closed"):
-                    done = True
-                    break
-            if done:
-                break
+            self.mic.flush()         # audio FRAIS → « Stop Aura » jugé en temps réel
+        stop = threading.Event()
+        done = threading.Event()
+
+        def feed():
+            started = False
+            last_msg = time.monotonic()
             try:
-                frame = next(frames)             # « Stop Aura » pendant la lecture
+                while not stop.is_set():
+                    m = client.recv(timeout=0.5)
+                    if m is None:
+                        if time.monotonic() - last_msg > config.STREAM_RESPONSE_TIMEOUT_S:
+                            logger.warning("[stream] pas de réponse backend (%.0fs) → abandon",
+                                           config.STREAM_RESPONSE_TIMEOUT_S)
+                            break
+                        continue
+                    last_msg = time.monotonic()
+                    kind, data = m
+                    if kind == "response":
+                        self.last_transcript = data.get("transcript", "") or self.last_transcript
+                        logger.info("[stream] réponse: %s", (data.get("text") or "")[:80])
+                        self._set_state("SPEAKING")
+                        self._spoke = True
+                    elif kind == "audio":
+                        if not started:
+                            self.player.start_stream()   # mpg123 démarré au 1er son (dette #1/#12)
+                            started = True
+                        self.player.feed(data)           # peut bloquer (backpressure) — OK, thread dédié
+                    elif kind in ("audio_end", "final", "error", "closed"):
+                        break
+            except Exception:
+                pass
+            finally:
+                if started and not stop.is_set():
+                    self.player.end_stream()
+                done.set()
+
+        t = threading.Thread(target=feed, daemon=True)
+        t.start()
+        # Boucle principale : micro EN CONTINU → « Stop Aura » coupe immédiatement.
+        while not done.is_set():
+            try:
+                frame = next(frames)
             except StopIteration:
                 break
-            if self.wake.process(frame) == "interrupt":
+            if self.wake.process_interrupt_only(frame) == "interrupt":   # C2 : interrupt-only
                 logger.info("[stream] STOP — coupure")
+                stop.set()
                 self.player.stop()
+                client.send_cancel()                                     # dette #16 : teardown propre
+                t.join(timeout=1.0)
                 return "stop"
-        self.player.end_stream()
+        t.join(timeout=2.0)
         return None
 
     # ── Teardown déterministe du SPEAKING (aucune fuite socket/zombie) ──
@@ -461,9 +506,9 @@ class Orchestrator:
                 frame = next(frames)
             except StopIteration:
                 break
-            ev = self.wake.process(frame)
             # « Stop Aura » = je veux le SILENCE → on coupe et on s'arrête (IDLE).
-            if ev == "interrupt":
+            # interrupt-only : l'écho TTS ne doit pas réarmer le cooldown du wake (C2).
+            if self.wake.process_interrupt_only(frame) == "interrupt":
                 logger.info("[state] STOP — coupure (silence)")
                 self._teardown_speak(t, stop, res)
                 return "stop"
@@ -528,6 +573,9 @@ class Orchestrator:
         self.target.load_references()   # cache l'empreinte vocale (endpointing local)
         if config.AEC_ENABLED:
             logger.info("[AEC] activé — audio via « %s » (annulation d'écho PipeWire)", config.AEC_ALSA_DEVICE)
+        else:
+            logger.warning("[AEC] DÉSACTIVÉ (AEC_ENABLED=0) — l'écho TTS peut masquer « Stop Aura » "
+                           "pendant la lecture. Active l'AEC (setup_aec.sh + AEC_ENABLED=1) pour un arrêt fiable.")
         self.ambient.start()
         threading.Thread(target=self._state_pusher, daemon=True).start()  # états → front (ordre garanti)
         if config.MUTE_POLL_S > 0:
@@ -580,10 +628,11 @@ class Orchestrator:
                         self._set_state("LISTENING")
 
                 elif self.state == "LISTENING":
-                    # Chemin B : flux streaming (silence généreux, ou Smart Turn si activé).
+                    recent = np.zeros(0, dtype=np.int16)   # le wake-gate a fait son office → purge (#11)
+                    # Chemin B : flux streaming (Deepgram Flux décide la fin de tour).
                     streamed = None
                     if config.STREAMING_MODE:
-                        streamed = self._handle_command_streaming(frames)
+                        streamed = self._handle_command_streaming(frames, from_conversing)
                     if streamed is not None:
                         next_state, from_conversing = streamed
                         wasted = 0 if getattr(self, "_spoke", False) else wasted + 1

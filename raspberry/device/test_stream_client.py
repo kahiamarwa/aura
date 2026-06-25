@@ -33,8 +33,7 @@ def main():
     for i in range(0, len(pcm), 2560):     # chunks de 80ms
         c.send_pcm(pcm[i:i + 2560])
         time.sleep(0.05)
-    print("→ EOT (fin de tour)")
-    c.send_eot()
+    print("→ fin du WAV — Deepgram Flux détecte l'EndOfTurn tout seul (pas d'EOT manuel)")
 
     audio_bytes = 0
     while True:
@@ -45,8 +44,8 @@ def main():
         kind, data = m
         if kind == "partial":
             print("  partial :", data.get("text", ""))
-        elif kind == "committed":
-            print("  committed :", data.get("text", ""))
+        elif kind == "turn_end":
+            print("  → turn_end (Flux) :", data.get("transcript", ""))
         elif kind == "response":
             print("  ✅ RÉPONSE :", data.get("text", "")[:200])
         elif kind == "audio":

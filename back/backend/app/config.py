@@ -38,8 +38,11 @@ class Settings(BaseSettings):
     INTENT_CONFIDENCE: float = 0.6
 
     # Deepgram Flux (chemin B) : seuil de confiance fin de tour (0.5-0.9 ; ↑ = plus
-    # patient, attend que tu aies vraiment fini). eot_timeout = filet à 5s.
+    # patient, attend que tu aies vraiment fini).
     FLUX_EOT_THRESHOLD: float = 0.7
+    # Filet : fin de tour forcée après ce silence (ms), même sous le seuil. 5000 =
+    # défaut Deepgram ; 2500-3000 plus réactif en français. Configurable (I8).
+    FLUX_EOT_TIMEOUT_MS: int = 3000
 
     class Config:
         env_file = ".env"

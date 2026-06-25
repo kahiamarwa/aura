@@ -170,6 +170,10 @@ class MicStream:
                 if empties >= 2:
                     self._mark_lost("USB coupé ?")
                     self._try_reopen()
+                # ANTI-BRIQUE (C1) : on YIELD du silence au lieu de bloquer. Sinon le
+                # consommateur (boucle SPEAKING/écoute) reste figé sur next(frames) et ne
+                # réévalue jamais sa condition de sortie → enceinte bloquée jusqu'au reboot.
+                yield np.zeros(config.FRAME_SAMPLES, dtype=np.int16)
                 continue
             empties = 0
             frame = np.frombuffer(raw, dtype=np.int16)

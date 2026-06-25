@@ -575,6 +575,23 @@ async def device_state(
         return {"ok": False, "reason": "error"}
 
 
+def _recent_ambient(user_token: str | None, limit: int = 6) -> list[str]:
+    """Derniers segments ambiants (device_status.ambient) → contexte pour l'agent et le
+    gating intent du chemin streaming (parité avec converse, qui les reçoit du device)."""
+    if not user_token:
+        return []
+    try:
+        supabase = get_supabase_client(user_token)
+        user_id = get_user_id(supabase, user_token)
+        r = (supabase.table("device_status").select("ambient")
+             .eq("user_id", user_id).limit(1).execute())
+        ambient = (r.data[0].get("ambient") or []) if r.data else []
+        return [a.get("text", "") for a in ambient[-limit:] if a.get("text")]
+    except Exception as e:
+        logger.debug("[device] recent ambient error: %s", e)
+        return []
+
+
 def _persist_ambient(user_token: str, text: str):
     """Ajoute un segment ambiant à device_status.ambient (borné aux 12 derniers)."""
     if not user_token or not text:

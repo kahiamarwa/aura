@@ -145,6 +145,9 @@ STREAM_PAUSE_S = float(os.getenv("STREAM_PAUSE_S", "0.4"))   # silence avant de 
 # silence tolérée avant de clore le tour. Généreux (1,5s) → tu peux hésiter sans
 # être coupé. C'est l'approche FIABLE (Smart Turn v3 est trop pressé en français).
 STREAM_SILENCE_S = float(os.getenv("STREAM_SILENCE_S", "1.5"))
+# Garde-fou lecture : si le backend n'envoie RIEN pendant ce délai (réponse/audio),
+# on abandonne la lecture au lieu de rester bloqué sur SPEAKING. Couvre LLM + TTS lents.
+STREAM_RESPONSE_TIMEOUT_S = float(os.getenv("STREAM_RESPONSE_TIMEOUT_S", "30"))
 VAD_SPEECH_FRAMES = 2          # frames consécutives pour démarrer (~hystérésis)
 VAD_SILENCE_FRAMES = 20        # frames de silence pour clore (~0.6s à 32ms/frame)
 
