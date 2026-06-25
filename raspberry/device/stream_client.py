@@ -37,7 +37,7 @@ class StreamClient:
         self._rx: "queue.Queue[tuple[str, object]]" = queue.Queue()
         self._alive = False
 
-    def connect(self, timeout: float = 5.0) -> bool:
+    def connect(self, timeout: float = 12.0) -> bool:
         try:
             import websocket  # websocket-client
         except ImportError:

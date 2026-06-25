@@ -72,6 +72,32 @@ async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversin
     (I2). Et surtout : la VÉRIF LOCUTEUR (ECAPA ~10s sur VPS lent) tourne EN PARALLÈLE avec
     resolve_conversation ∥ mémoire (au lieu de 10s + 12s séquentiels qui faisaient timeout le
     device). Gating intent sur les follow-ups (I5). Badge = résultat vérifié (I6)."""
+    # KEEPALIVE : tant que le tour n'est pas fini, on ping le device toutes les ~10s
+    # (« je réfléchis »). Il ne timeout JAMAIS sur une tâche LONGUE (rapport, recherche),
+    # tout en coupant si le backend meurt vraiment. TOUS les envois device passent par _send
+    # (verrou) pour ne pas entremêler le ping et le flux MP3.
+    ws_lock = asyncio.Lock()
+    keepalive_stop = asyncio.Event()
+
+    async def _send(payload=None, raw=None):
+        async with ws_lock:
+            if raw is not None:
+                await ws.send_bytes(raw)
+            else:
+                await ws.send_json(payload)
+
+    async def _keepalive():
+        while not keepalive_stop.is_set():
+            try:
+                await asyncio.wait_for(keepalive_stop.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                try:
+                    await _send({"type": "thinking"})
+                except Exception:
+                    return
+
+    ka_task = asyncio.create_task(_keepalive())
+
     # Contexte ambiant : 1 requête, réutilisée pour le gating ET l'agent (parité converse, I5).
     ambient = await asyncio.to_thread(_recent_ambient, user_token)
 
@@ -83,7 +109,8 @@ async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversin
             intent = {"directed": True}
         if not intent.get("directed", True) and intent.get("confidence", 0.0) >= settings.INTENT_CONFIDENCE:
             logger.info("[stream] not directed (conf=%.2f) → skip", intent.get("confidence", 0.0))
-            await ws.send_json({"type": "final", "transcript": transcript, "status": "not_directed"})
+            keepalive_stop.set()
+            await _send({"type": "final", "transcript": transcript, "status": "not_directed"})
             return
 
     # ── EN PARALLÈLE : vérif locuteur ∥ conversation ∥ mémoire ──────────
@@ -103,8 +130,9 @@ async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversin
                         verify.get("speaker_name"), verify.get("score") or 0.0)
             _push_status(user_token, speaker=verify.get("speaker_name"),
                          verified=False, speaker_score=verify.get("score"))
-            await ws.send_json({"type": "rejected", "transcript": transcript,
-                                "speaker": verify.get("speaker_name"), "score": verify.get("score")})
+            keepalive_stop.set()
+            await _send({"type": "rejected", "transcript": transcript,
+                         "speaker": verify.get("speaker_name"), "score": verify.get("score")})
             return
 
     # Badge locuteur vérifié (I6 : plus de badge périmé collé).
@@ -153,14 +181,14 @@ async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversin
         if not seg:
             return
         if not spoke_response:
-            await ws.send_json({"type": "response", "transcript": transcript,
-                                "text": seg, "conversation_id": conv_id})
+            await _send({"type": "response", "transcript": transcript,
+                         "text": seg, "conversation_id": conv_id})
             spoke_response = True
         try:
             async for mp3 in stream_tts(text=seg, voice_id=settings.ELEVENLABS_VOICE_ID,
                                         api_key=settings.ELEVENLABS_API_KEY):
                 nbytes += len(mp3)
-                await ws.send_bytes(mp3)
+                await _send(raw=mp3)
         except Exception as e:
             logger.warning("[stream] TTS error: %s", e)
 
@@ -219,19 +247,20 @@ async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversin
 
     await asyncio.gather(producer(), consumer())
 
+    keepalive_stop.set()                       # le tour parle/se termine → stop le ping
     full_text = (state["full_text"] or "").strip()
     if not spoke_response:
         if not full_text:
-            await ws.send_json({"type": "final", "transcript": transcript, "status": "empty"})
+            await _send({"type": "final", "transcript": transcript, "status": "empty"})
             return
         # texte présent mais jamais « parlé » (ex : que des sources) → on l'envoie quand même
-        await ws.send_json({"type": "response", "transcript": transcript,
-                            "text": full_text, "conversation_id": conv_id})
+        await _send({"type": "response", "transcript": transcript,
+                     "text": full_text, "conversation_id": conv_id})
 
     threading.Thread(target=_persist_msg,
                      args=(user_token, conv_id, "assistant", full_text, state["attachments"]),
                      daemon=True).start()
-    await ws.send_json({"type": "audio_end"})
+    await _send({"type": "audio_end"})
     logger.info("[stream] tour terminé (%d octets MP3, %d car.)", nbytes, len(full_text))
 
 

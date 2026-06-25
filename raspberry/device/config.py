@@ -153,8 +153,9 @@ STREAM_SILENCE_S = float(os.getenv("STREAM_SILENCE_S", "1.5"))
 # on abandonne la lecture au lieu de rester bloqué sur SPEAKING. Couvre LLM + TTS lents.
 STREAM_RESPONSE_TIMEOUT_S = float(os.getenv("STREAM_RESPONSE_TIMEOUT_S", "60"))
 # Garde-fou : durée MAX de la lecture (SPEAKING). Si mpg123 fige sur une sortie audio
-# cassée, on coupe au lieu de rester bloqué pour toujours sur « AURA répond… ».
-SPEAK_MAX_S = float(os.getenv("SPEAK_MAX_S", "90"))
+# cassée, on coupe au lieu de rester bloqué pour toujours. Large (5 min) pour ne pas
+# couper une réponse longue légitime ; c'est juste un backstop anti-blocage.
+SPEAK_MAX_S = float(os.getenv("SPEAK_MAX_S", "300"))
 VAD_SPEECH_FRAMES = 2          # frames consécutives pour démarrer (~hystérésis)
 VAD_SILENCE_FRAMES = 20        # frames de silence pour clore (~0.6s à 32ms/frame)
 
