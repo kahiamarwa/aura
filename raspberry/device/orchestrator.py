@@ -456,7 +456,18 @@ class Orchestrator:
         t = threading.Thread(target=feed, daemon=True)
         t.start()
         # Boucle principale : micro EN CONTINU → « Stop Aura » coupe immédiatement.
+        spoke_at = None
         while not done.is_set():
+            # Garde-fou : si mpg123 fige sur une sortie audio cassée, ne JAMAIS rester
+            # bloqué sur SPEAKING — on coupe au bout de SPEAK_MAX_S.
+            if self._spoke and spoke_at is None:
+                spoke_at = time.monotonic()
+            if spoke_at is not None and time.monotonic() - spoke_at > config.SPEAK_MAX_S:
+                logger.warning("[stream] lecture trop longue (%.0fs) → abandon (sortie audio ?)",
+                               config.SPEAK_MAX_S)
+                stop.set()
+                self.player.stop()
+                break
             try:
                 frame = next(frames)
             except StopIteration:

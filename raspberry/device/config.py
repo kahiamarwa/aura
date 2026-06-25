@@ -93,10 +93,14 @@ elif AEC_ENABLED:
 else:
     INPUT_DEVICE = None
 
-# Périphérique de sortie ALSA pour mpg123/aplay : le bridge pulse si AEC, sinon
-# None = défaut ALSA. La lecture DOIT passer par le même graphe que la capture
-# pour servir de référence d'écho à l'annulateur.
-PLAYBACK_ALSA_DEVICE = AEC_ALSA_DEVICE if AEC_ENABLED else None
+# Sortie audio EXPLICITE (mpg123/aplay). Priorité :
+#   1. bridge pulse si AEC activé (référence d'écho)
+#   2. AUDIO_OUTPUT_DEVICE si défini (ex: "plughw:0" pour le jack 3,5mm) — BYPASSE PipeWire,
+#      utile quand le défaut système (sink PipeWire/echo-cancel) est cassé ou n'est pas le jack
+#   3. sinon None = défaut ALSA
+AUDIO_OUTPUT_DEVICE = os.getenv("AUDIO_OUTPUT_DEVICE", "")
+PLAYBACK_ALSA_DEVICE = (AEC_ALSA_DEVICE if AEC_ENABLED
+                        else (AUDIO_OUTPUT_DEVICE or None))
 
 # ── Wake word (modèles ONNX locaux) ──────────────────────────────────
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -148,6 +152,9 @@ STREAM_SILENCE_S = float(os.getenv("STREAM_SILENCE_S", "1.5"))
 # Garde-fou lecture : si le backend n'envoie RIEN pendant ce délai (réponse/audio),
 # on abandonne la lecture au lieu de rester bloqué sur SPEAKING. Couvre LLM + TTS lents.
 STREAM_RESPONSE_TIMEOUT_S = float(os.getenv("STREAM_RESPONSE_TIMEOUT_S", "60"))
+# Garde-fou : durée MAX de la lecture (SPEAKING). Si mpg123 fige sur une sortie audio
+# cassée, on coupe au lieu de rester bloqué pour toujours sur « AURA répond… ».
+SPEAK_MAX_S = float(os.getenv("SPEAK_MAX_S", "90"))
 VAD_SPEECH_FRAMES = 2          # frames consécutives pour démarrer (~hystérésis)
 VAD_SILENCE_FRAMES = 20        # frames de silence pour clore (~0.6s à 32ms/frame)
 
