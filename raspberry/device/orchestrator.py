@@ -365,6 +365,8 @@ class Orchestrator:
         """Reçoit la réponse (texte + MP3) du backend et la joue, avec « Stop Aura »."""
         self._spoke = False
         self.player.start_stream()
+        if getattr(self, "mic", None):
+            self.mic.flush()        # audio FRAIS → « Stop Aura » jugé en temps réel (pas le backlog)
         done = False
         while not done:
             while True:                          # draine tout l'arrivé (non bloquant)
