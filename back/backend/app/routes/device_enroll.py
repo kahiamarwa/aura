@@ -5,19 +5,60 @@ Le DEVICE le lit (poll /api/device/control), guide la capture avec SON micro (LE
 puis POST l'audio à /api/device/enroll. ECAPA tourne CÔTÉ SERVEUR (aucune clé sur l'appareil).
 But : enrôler avec le MÊME chemin audio que la vérif → cosine fiable (vs micro navigateur).
 """
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
+from fastapi.responses import Response
 
+from app.config import get_settings
 from app.routes.device_pairing import resolve_user_token
 from app.routes.gemini_stt import pcm_to_wav
 from app.services.speaker_service import SpeakerService
 from app.services.supabase_client import get_supabase_client, get_user_id, get_service_client
+from app.services.tts_service import stream_tts
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Prompts vocaux servis À L'ENCEINTE (TTS + cache serveur → aucune clé sur l'appareil).
+# Le device les récupère une fois puis les garde en cache local.
+_PROMPT_TEXTS = {
+    "enroll_intro": "Je vais apprendre ta voix. Quand la lumière devient verte, lis à voix "
+                    "haute le texte affiché sur l'écran, naturellement.",
+    "enroll_speak": "Parle maintenant.",
+    "enroll_continue": "Continue, je t'écoute.",
+    "enroll_almost": "Encore quelques secondes.",
+    "enroll_done": "C'est bon. Je reconnais ta voix maintenant.",
+    "enroll_fail": "Je n'ai pas bien entendu. On réessaiera plus tard.",
+}
+_PROMPT_CACHE = Path("/tmp/aura_enroll_prompts")
+
+
+@router.get("/api/device/enroll-prompt/{name}")
+async def enroll_prompt(name: str, raw_request: Request):
+    """Sert un prompt vocal MP3 à l'enceinte (TTS ElevenLabs, mis en cache côté serveur).
+    Auth = DEVICE_TOKEN. Permet la VOIX sans embarquer de clé ni distribuer des fichiers."""
+    if not resolve_user_token(raw_request):
+        raise HTTPException(status_code=401, detail="device auth required")
+    text = _PROMPT_TEXTS.get(name)
+    if not text:
+        raise HTTPException(status_code=404, detail="unknown prompt")
+    _PROMPT_CACHE.mkdir(parents=True, exist_ok=True)
+    cached = _PROMPT_CACHE / f"{name}.mp3"
+    if not cached.exists():
+        settings = get_settings()
+        if not settings.ELEVENLABS_API_KEY or not settings.ELEVENLABS_VOICE_ID:
+            raise HTTPException(status_code=503, detail="tts not configured")
+        data = b""
+        async for chunk in stream_tts(text=text, voice_id=settings.ELEVENLABS_VOICE_ID,
+                                      api_key=settings.ELEVENLABS_API_KEY):
+            data += chunk
+        cached.write_bytes(data)
+    return Response(content=cached.read_bytes(), media_type="audio/mpeg")
 
 
 def _clear_enroll_request(user_id: str):
@@ -97,7 +138,9 @@ async def device_enroll(
         supabase = get_supabase_client(user_token)
         user_id = get_user_id(supabase, user_token)
         service = SpeakerService.get_instance()
-        embedding, ref_audio = service.enroll_from_wav_bytes(wav)   # ValueError si pas de parole
+        # ECAPA = CPU pur → dans un thread pour NE PAS bloquer l'event loop (sinon les polls
+        # control/state du device se bloquent et le device coupe à son timeout).
+        embedding, ref_audio = await asyncio.to_thread(service.enroll_from_wav_bytes, wav)
         embedding_b64 = service.embedding_to_base64(embedding)
 
         existing = (supabase.table("speaker_enrollments").select("id")

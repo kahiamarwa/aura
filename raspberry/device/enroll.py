@@ -21,12 +21,26 @@ SEGMENT_S = 5.0
 
 
 def _play_prompt(orch, name: str):
-    """Joue un prompt MP3 embarqué (bloquant). Fallback bip si le fichier manque
-    (ex : prompts pas encore générés via gen_enroll_prompts.py)."""
+    """Joue un prompt vocal MP3 (bloquant). D'abord le cache local, sinon on le récupère
+    du BACKEND (TTS + cache serveur) et on le met en cache local. Fallback bip si tout échoue."""
     path = PROMPTS_DIR / f"{name}.mp3"
+    data = None
     if path.exists():
         try:
-            orch.player.play_mp3(path.read_bytes())
+            data = path.read_bytes()
+        except Exception:
+            data = None
+    if data is None:
+        data = cloud.get_enroll_prompt(name)        # récupère depuis le backend
+        if data:
+            try:
+                PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)              # cache local pour la prochaine fois
+            except Exception:
+                pass
+    if data:
+        try:
+            orch.player.play_mp3(data)
             return
         except Exception as e:
             logger.debug("[enroll] prompt %s KO: %s", name, e)

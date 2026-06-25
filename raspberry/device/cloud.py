@@ -186,13 +186,30 @@ def get_control() -> dict:
     return neutral
 
 
+def get_enroll_prompt(name: str) -> bytes | None:
+    """Récupère un prompt vocal MP3 depuis le backend (TTS + cache serveur). None si KO.
+    Timeout large : la 1ère requête peut déclencher la génération TTS côté serveur."""
+    if not (config.DEVICE_TOKEN or get_access_token()):
+        return None
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            r = client.get(_url(f"/api/device/enroll-prompt/{name}"), headers=_headers())
+        if r.status_code == 200 and r.content:
+            return r.content
+    except Exception as e:
+        logger.debug("[enroll] prompt %s fetch KO: %s", name, e)
+    return None
+
+
 def enroll(name: str, wav_bytes: bytes) -> dict:
     """Envoie l'audio capté par l'enceinte → empreinte vocale (ECAPA côté serveur).
     Renvoie {"ok": bool, "status": "ok"|"not_enough_speech"|"error", ...}."""
     if not (config.DEVICE_TOKEN or get_access_token()):
         return {"ok": False, "status": "error"}
     try:
-        with httpx.Client(timeout=30.0) as client:
+        # Marge large : upload (~liaison du Pi) + ECAPA serveur sur ~20s d'audio.
+        timeout = httpx.Timeout(connect=10.0, write=90.0, read=90.0, pool=10.0)
+        with httpx.Client(timeout=timeout) as client:
             r = client.post(_url("/api/device/enroll"), headers=_headers(),
                             data={"name": name},
                             files={"audio": ("enroll.wav", wav_bytes, "audio/wav")})
