@@ -64,14 +64,14 @@ async def _connect_flux(api_key: str, url: str):
         return await websockets.connect(url, extra_headers=hdr)
 
 
-async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversing=False, verify=None):
-    """EndOfTurn → (gating) → LLM streamé → TTS PHRASE PAR PHRASE → MP3 au device.
+async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversing=False, verify_wav=None):
+    """EndOfTurn → (gating + vérif locuteur EN PARALLÈLE) → LLM streamé → TTS PHRASE PAR
+    PHRASE → MP3 au device.
 
-    Appelé UNIQUEMENT si le locuteur est autorisé (la vérif est faite en amont, cf.
-    device_stream). Le LLM (producteur) et le TTS (consommateur) tournent EN PARALLÈLE via
-    une file de phrases : Aura parle la 1ère phrase pendant que le LLM génère la suite (I2).
-    Conversation ∥ mémoire en parallèle (I3). Gating intent sur les follow-ups (I5).
-    Badge locuteur = résultat vérifié (I6). Tout échec est loggé (I7)."""
+    Le LLM (producteur) et le TTS (consommateur) tournent EN PARALLÈLE via une file de phrases
+    (I2). Et surtout : la VÉRIF LOCUTEUR (ECAPA ~10s sur VPS lent) tourne EN PARALLÈLE avec
+    resolve_conversation ∥ mémoire (au lieu de 10s + 12s séquentiels qui faisaient timeout le
+    device). Gating intent sur les follow-ups (I5). Badge = résultat vérifié (I6)."""
     # Contexte ambiant : 1 requête, réutilisée pour le gating ET l'agent (parité converse, I5).
     ambient = await asyncio.to_thread(_recent_ambient, user_token)
 
@@ -86,17 +86,34 @@ async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversin
             await ws.send_json({"type": "final", "transcript": transcript, "status": "not_directed"})
             return
 
-    # Badge locuteur : on AFFICHE le résultat vérifié (nom ✓ + score), ou on efface si pas
-    # d'empreinte/vérif désactivée (I6 : plus de badge périmé collé).
-    if verify and verify.get("speaker_name"):
+    # ── EN PARALLÈLE : vérif locuteur ∥ conversation ∥ mémoire ──────────
+    conv_task = asyncio.create_task(_resolve_conversation(user_token, transcript))
+    mem_task = asyncio.create_task(asyncio.to_thread(memory_service.retrieve, user_token, transcript))
+    verify = {"verified": True, "reason": "disabled"}
+    if verify_wav is not None:
+        try:
+            verify = await asyncio.to_thread(_verify_speaker, user_token, verify_wav)
+        except Exception as e:
+            logger.warning("[stream] verify error (fail-open): %s", e)
+            verify = {"verified": True, "reason": "error"}
+        if _speaker_blocked(verify):
+            conv_task.cancel()
+            mem_task.cancel()
+            logger.info("[stream] locuteur NON autorisé (%s, score=%.2f) → aucune réponse",
+                        verify.get("speaker_name"), verify.get("score") or 0.0)
+            _push_status(user_token, speaker=verify.get("speaker_name"),
+                         verified=False, speaker_score=verify.get("score"))
+            await ws.send_json({"type": "rejected", "transcript": transcript,
+                                "speaker": verify.get("speaker_name"), "score": verify.get("score")})
+            return
+
+    # Badge locuteur vérifié (I6 : plus de badge périmé collé).
+    if verify.get("speaker_name"):
         _push_status(user_token, speaker=verify.get("speaker_name"),
                      verified=bool(verify.get("verified")), speaker_score=verify.get("score"))
     else:
         _push_status(user_token, speaker=None, verified=None, speaker_score=None)
 
-    # I3 : conversation (Haiku) ∥ mémoire (RAG) en parallèle (au lieu de séquentiel).
-    conv_task = asyncio.create_task(_resolve_conversation(user_token, transcript))
-    mem_task = asyncio.create_task(asyncio.to_thread(memory_service.retrieve, user_token, transcript))
     conv_id = await conv_task
     memories = await mem_task
     threading.Thread(target=_persist_msg, args=(user_token, conv_id, "user", transcript), daemon=True).start()
@@ -269,28 +286,14 @@ async def device_stream(ws: WebSocket):
                     if not transcript:
                         await ws.send_json({"type": "final", "transcript": ""})
                         break
-                    # ── VÉRIF LOCUTEUR avant toute réponse — un ANONYME ne reçoit RIEN ──
-                    # ECAPA tourne sur le PCM bufferisé du tour (clé/ONNX côté serveur).
-                    verify = {"verified": True, "reason": "disabled"}
-                    if settings.STREAM_VERIFY_ENFORCE:
-                        try:
-                            wav = pcm_to_wav(bytes(pcm_buffer), sample_rate=16000)
-                            verify = await asyncio.to_thread(_verify_speaker, user_token, wav)
-                        except Exception as e:
-                            logger.warning("[stream] verify error (fail-open): %s", e)
-                            verify = {"verified": True, "reason": "error"}
-                        if _speaker_blocked(verify):
-                            logger.info("[stream] locuteur NON autorisé (%s, score=%.2f) → aucune réponse",
-                                        verify.get("speaker_name"), verify.get("score") or 0.0)
-                            _push_status(user_token, speaker=verify.get("speaker_name"),
-                                         verified=False, speaker_score=verify.get("score"))
-                            await ws.send_json({"type": "rejected", "transcript": transcript,
-                                                "speaker": verify.get("speaker_name"),
-                                                "score": verify.get("score")})
-                            break
-                    # locuteur autorisé (ou vérif désactivée) → on génère la réponse
+                    # La VÉRIF LOCUTEUR (ECAPA ~10s) est faite DANS le pipeline, EN PARALLÈLE
+                    # avec resolve/mémoire (sinon 10s+12s séquentiels → timeout device). Un
+                    # anonyme est rejeté là-bas (aucun appel LLM/TTS). PCM du tour → WAV.
+                    verify_wav = (pcm_to_wav(bytes(pcm_buffer), sample_rate=16000)
+                                  if settings.STREAM_VERIFY_ENFORCE else None)
                     try:
-                        await _run_eot_pipeline(ws, user_token, transcript, settings, from_conversing, verify)
+                        await _run_eot_pipeline(ws, user_token, transcript, settings,
+                                                from_conversing, verify_wav)
                     except Exception as e:   # I1/I7 : pas de 30s de silence
                         logger.error("[stream] pipeline KO: %s", e, exc_info=True)
                         try:
