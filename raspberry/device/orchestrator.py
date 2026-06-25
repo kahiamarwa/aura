@@ -374,7 +374,12 @@ class Orchestrator:
         self._set_state("THINKING")
         barge = self._play_streamed_response(client, frames)
         client.close()
-        return ("IDLE", False) if barge == "stop" else ("CONVERSING", False)
+        if barge == "stop":
+            return "IDLE", False
+        if barge == "rejected":
+            play_beep(freq=300.0, dur=0.12)   # tonalité basse = « voix non reconnue »
+            return "IDLE", False
+        return "CONVERSING", False
 
     def _play_streamed_response(self, client, frames) -> str | None:
         """Reçoit la réponse (texte + MP3) et la joue. L'audio est joué dans un THREAD
@@ -390,6 +395,7 @@ class Orchestrator:
             self.mic.flush()         # audio FRAIS → « Stop Aura » jugé en temps réel
         stop = threading.Event()
         done = threading.Event()
+        flags = {"rejected": False}
 
         def feed():
             started = False
@@ -415,6 +421,10 @@ class Orchestrator:
                             self.player.start_stream()   # mpg123 démarré au 1er son (dette #1/#12)
                             started = True
                         self.player.feed(data)           # peut bloquer (backpressure) — OK, thread dédié
+                    elif kind == "rejected":
+                        logger.info("[stream] locuteur non autorisé — aucune réponse")
+                        flags["rejected"] = True
+                        break
                     elif kind in ("audio_end", "final", "error", "closed"):
                         break
             except Exception:
@@ -440,7 +450,7 @@ class Orchestrator:
                 t.join(timeout=1.0)
                 return "stop"
         t.join(timeout=2.0)
-        return None
+        return "rejected" if flags["rejected"] else None
 
     # ── Teardown déterministe du SPEAKING (aucune fuite socket/zombie) ──
     def _teardown_speak(self, t, stop, res):

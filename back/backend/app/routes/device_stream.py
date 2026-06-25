@@ -25,7 +25,9 @@ from app.config import get_settings
 from app.routes.device_pairing import user_token_from_device
 from app.routes.device_converse import (
     _resolve_conversation, _persist_msg, _strip_sources, _push_status, _recent_ambient,
+    _verify_speaker,
 )
+from app.routes.gemini_stt import pcm_to_wav
 from app.routes.intent_classifier import classify_intent
 from app.services import llm_service, memory_service
 from app.services.tts_service import stream_tts
@@ -36,6 +38,12 @@ router = APIRouter()
 # Frontière de phrase pour le TTS incrémental (I2) : ponctuation forte (+ guillemet/parenthèse
 # fermante éventuel) suivie d'un espace, OU retour à la ligne.
 _SENT_BOUNDARY = re.compile(r'[.!?:]["»)]?\s|\n')
+
+
+def _speaker_blocked(verify: dict) -> bool:
+    """True si le locuteur doit être BLOQUÉ : voix NON reconnue ALORS QUE des empreintes
+    sont enrôlées. (Si rien n'est enrôlé → reason='no_enrollments' → on laisse passer.)"""
+    return (not verify.get("verified", True)) and verify.get("reason") != "no_enrollments"
 
 
 def _flux_url(settings) -> str:
@@ -56,13 +64,14 @@ async def _connect_flux(api_key: str, url: str):
         return await websockets.connect(url, extra_headers=hdr)
 
 
-async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversing=False):
+async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversing=False, verify=None):
     """EndOfTurn → (gating) → LLM streamé → TTS PHRASE PAR PHRASE → MP3 au device.
 
-    Le LLM (producteur) et le TTS (consommateur) tournent EN PARALLÈLE via une file de
-    phrases : Aura parle la 1ère phrase pendant que le LLM génère la suite (I2 — gros gain
-    de latence, sans à-coups). Conversation ∥ mémoire en parallèle (I3). Gating intent sur
-    les follow-ups (I5). Badge locuteur périmé effacé (I6). Tout échec est loggé (I7)."""
+    Appelé UNIQUEMENT si le locuteur est autorisé (la vérif est faite en amont, cf.
+    device_stream). Le LLM (producteur) et le TTS (consommateur) tournent EN PARALLÈLE via
+    une file de phrases : Aura parle la 1ère phrase pendant que le LLM génère la suite (I2).
+    Conversation ∥ mémoire en parallèle (I3). Gating intent sur les follow-ups (I5).
+    Badge locuteur = résultat vérifié (I6). Tout échec est loggé (I7)."""
     # Contexte ambiant : 1 requête, réutilisée pour le gating ET l'agent (parité converse, I5).
     ambient = await asyncio.to_thread(_recent_ambient, user_token)
 
@@ -77,9 +86,13 @@ async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversin
             await ws.send_json({"type": "final", "transcript": transcript, "status": "not_directed"})
             return
 
-    # I6 : efface le badge locuteur périmé (le streaming ne fait PAS de speaker-verif → sinon
-    # l'ancien nom/score de l'ancien flux reste affiché à chaque tour).
-    _push_status(user_token, speaker=None, verified=None, speaker_score=None)
+    # Badge locuteur : on AFFICHE le résultat vérifié (nom ✓ + score), ou on efface si pas
+    # d'empreinte/vérif désactivée (I6 : plus de badge périmé collé).
+    if verify and verify.get("speaker_name"):
+        _push_status(user_token, speaker=verify.get("speaker_name"),
+                     verified=bool(verify.get("verified")), speaker_score=verify.get("score"))
+    else:
+        _push_status(user_token, speaker=None, verified=None, speaker_score=None)
 
     # I3 : conversation (Haiku) ∥ mémoire (RAG) en parallèle (au lieu de séquentiel).
     conv_task = asyncio.create_task(_resolve_conversation(user_token, transcript))
@@ -232,6 +245,7 @@ async def device_stream(ws: WebSocket):
         return
 
     done = asyncio.Event()
+    pcm_buffer = bytearray()                       # audio du tour → vérif locuteur (ECAPA) à l'EOT
 
     async def flux_to_device():
         try:
@@ -252,17 +266,37 @@ async def device_stream(ws: WebSocket):
                     logger.info("[stream] EndOfTurn conf=%.2f → %r",
                                 msg.get("end_of_turn_confidence", 0.0), transcript[:80])
                     await ws.send_json({"type": "turn_end", "transcript": transcript})
-                    if transcript:
-                        try:
-                            await _run_eot_pipeline(ws, user_token, transcript, settings, from_conversing)
-                        except Exception as e:   # I1/I7 : ne pas laisser le device attendre 30s en silence
-                            logger.error("[stream] pipeline KO: %s", e, exc_info=True)
-                            try:
-                                await ws.send_json({"type": "error", "error": "pipeline"})
-                            except Exception:
-                                pass
-                    else:
+                    if not transcript:
                         await ws.send_json({"type": "final", "transcript": ""})
+                        break
+                    # ── VÉRIF LOCUTEUR avant toute réponse — un ANONYME ne reçoit RIEN ──
+                    # ECAPA tourne sur le PCM bufferisé du tour (clé/ONNX côté serveur).
+                    verify = {"verified": True, "reason": "disabled"}
+                    if settings.STREAM_VERIFY_ENFORCE:
+                        try:
+                            wav = pcm_to_wav(bytes(pcm_buffer), sample_rate=16000)
+                            verify = await asyncio.to_thread(_verify_speaker, user_token, wav)
+                        except Exception as e:
+                            logger.warning("[stream] verify error (fail-open): %s", e)
+                            verify = {"verified": True, "reason": "error"}
+                        if _speaker_blocked(verify):
+                            logger.info("[stream] locuteur NON autorisé (%s, score=%.2f) → aucune réponse",
+                                        verify.get("speaker_name"), verify.get("score") or 0.0)
+                            _push_status(user_token, speaker=verify.get("speaker_name"),
+                                         verified=False, speaker_score=verify.get("score"))
+                            await ws.send_json({"type": "rejected", "transcript": transcript,
+                                                "speaker": verify.get("speaker_name"),
+                                                "score": verify.get("score")})
+                            break
+                    # locuteur autorisé (ou vérif désactivée) → on génère la réponse
+                    try:
+                        await _run_eot_pipeline(ws, user_token, transcript, settings, from_conversing, verify)
+                    except Exception as e:   # I1/I7 : pas de 30s de silence
+                        logger.error("[stream] pipeline KO: %s", e, exc_info=True)
+                        try:
+                            await ws.send_json({"type": "error", "error": "pipeline"})
+                        except Exception:
+                            pass
                     break                          # 1 tour par connexion
         except Exception as e:                     # I7 : ne plus avaler en silence
             logger.warning("[stream] flux_to_device: %s", e, exc_info=True)
@@ -277,6 +311,7 @@ async def device_stream(ws: WebSocket):
                     break
                 chunk = data.get("bytes")
                 if chunk:
+                    pcm_buffer.extend(chunk)       # bufferise pour la vérif locuteur
                     await flux.send(chunk)         # PCM 16k binaire BRUT (pas de base64)
                     continue
                 txt = data.get("text")

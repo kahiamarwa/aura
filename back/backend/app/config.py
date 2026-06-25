@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # défaut Deepgram ; 2500-3000 plus réactif en français. Configurable (I8).
     FLUX_EOT_TIMEOUT_MS: int = 3000
 
+    # Vérif locuteur en mode STREAMING (chemin B) : un locuteur NON enrôlé ne reçoit
+    # AUCUNE réponse — le backend gate AVANT le LLM (ECAPA sur le PCM bufferisé du tour).
+    # Essentiel pour une enceinte perso. Le seuil reste SPEAKER_THRESHOLD (0.25 par défaut).
+    # Désactiver (=0) → comme l'ancien flux : badge affiché mais réponse quand même.
+    STREAM_VERIFY_ENFORCE: bool = True
+
     class Config:
         env_file = ".env"
 
