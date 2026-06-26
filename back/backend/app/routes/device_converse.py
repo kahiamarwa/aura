@@ -168,12 +168,15 @@ def _push_status(user_token: str | None, **fields):
 _TITLE_SYS = ("Donne un TITRE court (3 à 6 mots, sans guillemets ni ponctuation finale) "
               "résumant le sujet de ce message vocal. Réponds UNIQUEMENT le titre.")
 _TOPIC_SYS = (
-    "Tu décides si un NOUVEAU message vocal CONTINUE la conversation/réunion en cours "
-    "ou démarre un NOUVEAU sujet, en te basant sur les derniers échanges.\n"
-    "RÈGLE IMPORTANTE : une réunion/discussion peut durer des HEURES sur le même sujet. "
-    "Ne crée PAS un nouveau sujet juste parce que du temps a passé. Le critère est le SUJET, pas le temps.\n"
-    "Réponds 'NOUVEAU: <titre court 3-6 mots>' UNIQUEMENT si le message porte clairement sur "
-    "AUTRE CHOSE que ce qui précède. Sinon réponds 'CONTINUE'."
+    "Tu décides si un NOUVEAU message vocal CONTINUE le sujet en cours, ou démarre un NOUVEAU sujet.\n"
+    "Réponds 'CONTINUE' SEULEMENT si le message est LIÉ au dernier échange : même sujet, précision, "
+    "suite logique, question de suivi.\n"
+    "Réponds 'NOUVEAU: <titre 3-6 mots>' dès que le message change CLAIREMENT de thème — autre "
+    "domaine, ou question sans rapport avec ce qui précède.\n"
+    "Exemples :\n"
+    "- on parlait de bases de données, puis « la coupe du monde » → NOUVEAU: Coupe du monde\n"
+    "- on parlait de la météo à Lyon, puis « et demain ? » → CONTINUE\n"
+    "Dans le doute, si le THÈME a changé → NOUVEAU. Une suite/précision sur le même thème → CONTINUE."
 )
 
 
@@ -256,6 +259,8 @@ async def _resolve_conversation(user_token: str | None, transcript: str) -> str 
             f"{recent}\n\nNOUVEAU message : « {transcript[:200]} »"
         )
         decision = await _haiku(_TOPIC_SYS, user_msg)
+        logger.info("[conv] sujet: %r | dernier=« %s » | nouveau=%r",
+                    (decision or "(vide)")[:40], title[:30], transcript[:40])
         if not decision or decision.upper().startswith("CONTINUE"):
             return conv_id   # fail-open = on continue (ne JAMAIS fragmenter à tort)
         new_title = (decision.split(":", 1)[1].strip() if ":" in decision else "")
@@ -587,7 +592,11 @@ def _recent_ambient(user_token: str | None, limit: int = 6) -> list[str]:
         r = (supabase.table("device_status").select("ambient")
              .eq("user_id", user_id).limit(1).execute())
         ambient = (r.data[0].get("ambient") or []) if r.data else []
-        return [a.get("text", "") for a in ambient[-limit:] if a.get("text")]
+        texts = [a.get("text", "") for a in ambient[-limit:] if a.get("text")]
+        # ÉTIQUETTE clairement comme BRUIT DE FOND : sans ça l'agent prend la conversation
+        # entendue autour comme si c'était la commande → il dérive sur des sujets hors-sujet.
+        return [f"[Ambiant entendu autour — NE PAS répondre à ceci, juste contexte] {t}"
+                for t in texts]
     except Exception as e:
         logger.debug("[device] recent ambient error: %s", e)
         return []
