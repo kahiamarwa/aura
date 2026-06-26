@@ -176,7 +176,9 @@ _TOPIC_SYS = (
     "Exemples :\n"
     "- on parlait de bases de données, puis « la coupe du monde » → NOUVEAU: Coupe du monde\n"
     "- on parlait de la météo à Lyon, puis « et demain ? » → CONTINUE\n"
-    "Dans le doute, si le THÈME a changé → NOUVEAU. Une suite/précision sur le même thème → CONTINUE."
+    "Dans le doute, si le THÈME a changé → NOUVEAU. Une suite/précision sur le même thème → CONTINUE.\n"
+    "IMPÉRATIF : réponds en UN SEUL MOT — soit exactement 'CONTINUE', soit 'NOUVEAU: <titre>'. "
+    "AUCUNE justification, AUCUN markdown (pas de **), AUCUNE autre phrase."
 )
 
 
@@ -261,9 +263,13 @@ async def _resolve_conversation(user_token: str | None, transcript: str) -> str 
         decision = await _haiku(_TOPIC_SYS, user_msg)
         logger.info("[conv] sujet: %r | dernier=« %s » | nouveau=%r",
                     (decision or "(vide)")[:40], title[:30], transcript[:40])
-        if not decision or decision.upper().startswith("CONTINUE"):
+        # Parsing ROBUSTE : Haiku ajoute parfois du markdown (**CONTINUE**) ou des justifs.
+        clean = (decision or "").strip().lstrip("*#>- ").upper()
+        if not decision or clean.startswith("CONTINUE"):
             return conv_id   # fail-open = on continue (ne JAMAIS fragmenter à tort)
-        new_title = (decision.split(":", 1)[1].strip() if ":" in decision else "")
+        # NOUVEAU: titre — 1ère ligne, après ':', sans markdown
+        first = (decision or "").strip().splitlines()[0]
+        new_title = (first.split(":", 1)[1].strip(" *#") if ":" in first else "")
         new_title = new_title or (await _haiku(_TITLE_SYS, transcript[:200])) or transcript[:40]
         logger.info("[conv] nouveau sujet → « %s »", new_title)
         return (await asyncio.to_thread(_create_conversation, user_token, new_title)) or conv_id
