@@ -84,6 +84,11 @@ class StreamClient:
     def send_cancel(self):
         self._send_json({"type": "cancel"})
 
+    def send_speaker(self, verified: bool, name: str, score: float):
+        """Résultat de la VÉRIF LOCUTEUR faite EN LOCAL (ECAPA sur le Pi) → le backend gate."""
+        self._send_json({"type": "speaker", "verified": bool(verified),
+                         "name": name or "", "score": round(float(score), 4)})
+
     def _send_json(self, obj):
         try:
             self._ws.send(json.dumps(obj))

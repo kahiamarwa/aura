@@ -312,9 +312,9 @@ def transcribe(pcm: np.ndarray) -> str:
 
 
 def fetch_user_embeddings() -> list:
-    """Récupère les empreintes vocales enrôlées (pour l'endpointing local).
+    """Récupère les empreintes vocales enrôlées (endpointing local + vérif locuteur locale).
 
-    Retourne une liste de np.ndarray (192-dim, L2-normalisés).
+    Retourne une liste de (nom, np.ndarray 192-dim L2-normalisé).
     """
     import io
     import base64
@@ -326,5 +326,5 @@ def fetch_user_embeddings() -> list:
             buf = io.BytesIO(base64.b64decode(e["embedding_b64"]))
             emb = np.load(buf).astype(np.float32)
             n = np.linalg.norm(emb)
-            out.append(emb / n if n > 0 else emb)
+            out.append((e.get("name", ""), emb / n if n > 0 else emb))
         return out

@@ -356,6 +356,7 @@ class Orchestrator:
         # PAS de mic.flush() ICI : on GARDE l'audio capté pendant le bip + la connexion =
         # le DÉBUT de ta commande (prononcé juste après « Dis Aura »). Le flush le jetait
         # → début de commande coupé. Flux ignore le bip (non-parole) et transcrit la commande.
+        cmd_audio = [preroll] if (preroll is not None and len(preroll)) else []  # buffer vérif locale
         deadline = time.monotonic() + config.CMD_MAX_S   # C1 : deadline MURALE (indép. des frames)
         progressed = False                               # I1 : reçu partial/turn_end ?
         transcript = ""
@@ -366,6 +367,7 @@ class Orchestrator:
             except StopIteration:
                 break
             client.send_pcm(frame.tobytes())
+            cmd_audio.append(frame)              # bufferise pour la vérif locuteur LOCALE
             while True:                          # messages backend (non bloquant)
                 m = client.recv(timeout=0.0)
                 if m is None:
@@ -379,6 +381,12 @@ class Orchestrator:
                     transcript = (data.get("transcript") or "").strip()
                     self.last_transcript = transcript or self.last_transcript
                     logger.info("[stream] fin de tour (Flux) — %r", transcript[:60])
+                    # VÉRIF LOCUTEUR EN LOCAL (ECAPA sur le Pi, instantané, zéro steal) →
+                    # on envoie le résultat au backend qui ne fait plus l'ECAPA lui-même.
+                    if transcript and cmd_audio:
+                        name, score, accepted = self.target.verify(np.concatenate(cmd_audio))
+                        client.send_speaker(accepted, name, score)
+                        logger.info("[verify] LOCAL : %s score=%.2f accepted=%s", name, score, accepted)
                     turn_ended = True
                     break
                 elif kind in ("final", "error", "closed"):

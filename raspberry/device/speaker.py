@@ -41,8 +41,11 @@ class TargetSpeaker:
     def __init__(self):
         self.available = False
         self._sess = None
-        self._refs: list[np.ndarray] = []
+        self._refs: list = []   # [(nom, embedding 192-dim)]
         self.threshold = float(os.getenv("TARGET_THRESHOLD", "0.30"))
+        # Seuil de VÉRIFICATION (gate locuteur) — plus haut que l'endpointing : seule TA
+        # voix répond. Ré-enrôle proprement pour des scores stables, puis monte-le.
+        self.verify_threshold = float(os.getenv("SPEAKER_VERIFY_THRESHOLD", "0.35"))
         try:
             import onnxruntime as ort
             path = _find_ecapa()
@@ -98,9 +101,27 @@ class TargetSpeaker:
             return None, 0.0
         try:
             emb = self._embed(pcm_int16)
-            score = max(float(np.dot(emb, ref)) for ref in self._refs)
+            score = max(float(np.dot(emb, ref)) for _, ref in self._refs)
             return score >= self.threshold, score
         except Exception as e:
             logger.warning("[TargetSpeaker] erreur embedding (%s) → fallback", e)
             self.available = False
             return None, 0.0
+
+    def verify(self, pcm_int16: np.ndarray):
+        """VÉRIFICATION du locuteur EN LOCAL (gate). Renvoie (nom, score, accepted).
+        accepted=True si le meilleur cosine ≥ verify_threshold. Si AUCUNE empreinte enrôlée
+        ou erreur → (None, 0.0, True) = fail-open (on laisse passer, comme le backend)."""
+        if not self.has_reference:
+            return None, 0.0, True
+        try:
+            emb = self._embed(pcm_int16)
+            best_name, best_score = None, -1.0
+            for name, ref in self._refs:
+                s = float(np.dot(emb, ref))
+                if s > best_score:
+                    best_score, best_name = s, name
+            return best_name, best_score, best_score >= self.verify_threshold
+        except Exception as e:
+            logger.warning("[TargetSpeaker] verify error (%s) → fail-open", e)
+            return None, 0.0, True

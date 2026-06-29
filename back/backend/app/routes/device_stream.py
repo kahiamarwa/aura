@@ -25,9 +25,7 @@ from app.config import get_settings
 from app.routes.device_pairing import user_token_from_device
 from app.routes.device_converse import (
     _resolve_conversation, _persist_msg, _strip_sources, _push_status, _recent_ambient,
-    _verify_speaker,
 )
-from app.routes.gemini_stt import pcm_to_wav
 from app.routes.intent_classifier import classify_intent
 from app.services import llm_service, memory_service
 from app.services.tts_service import stream_tts
@@ -39,11 +37,8 @@ router = APIRouter()
 # fermante éventuel) suivie d'un espace, OU retour à la ligne.
 _SENT_BOUNDARY = re.compile(r'[.!?:]["»)]?\s|\n')
 
-
-def _speaker_blocked(verify: dict) -> bool:
-    """True si le locuteur doit être BLOQUÉ : voix NON reconnue ALORS QUE des empreintes
-    sont enrôlées. (Si rien n'est enrôlé → reason='no_enrollments' → on laisse passer.)"""
-    return (not verify.get("verified", True)) and verify.get("reason") != "no_enrollments"
+# NB : la VÉRIF LOCUTEUR (ECAPA) est faite EN LOCAL SUR LE PI (zéro steal, instantané) et
+# envoyée via {type:"speaker"}. Le backend ne fait plus d'ECAPA → CPU libéré.
 
 
 def _flux_url(settings) -> str:
@@ -64,14 +59,14 @@ async def _connect_flux(api_key: str, url: str):
         return await websockets.connect(url, extra_headers=hdr)
 
 
-async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversing=False, verify_wav=None):
-    """EndOfTurn → (gating + vérif locuteur EN PARALLÈLE) → LLM streamé → TTS PHRASE PAR
-    PHRASE → MP3 au device.
+async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversing=False, verify=None):
+    """EndOfTurn → (gating intent) → LLM streamé → TTS PHRASE PAR PHRASE → MP3 au device.
 
-    Le LLM (producteur) et le TTS (consommateur) tournent EN PARALLÈLE via une file de phrases
-    (I2). Et surtout : la VÉRIF LOCUTEUR (ECAPA ~10s sur VPS lent) tourne EN PARALLÈLE avec
-    resolve_conversation ∥ mémoire (au lieu de 10s + 12s séquentiels qui faisaient timeout le
-    device). Gating intent sur les follow-ups (I5). Badge = résultat vérifié (I6)."""
+    Appelé UNIQUEMENT si le locuteur est autorisé — la VÉRIF est faite EN LOCAL SUR LE PI
+    (ECAPA, zéro steal) et reçue via {type:"speaker"} ; le backend ne fait plus d'ECAPA.
+    Le LLM (producteur) et le TTS (consommateur) tournent en parallèle via une file de phrases
+    (I2). Conversation ∥ mémoire en parallèle (I3). Gating intent sur les follow-ups (I5).
+    Badge locuteur = résultat reçu du device (I6)."""
     # KEEPALIVE : tant que le tour n'est pas fini, on ping le device toutes les ~10s
     # (« je réfléchis »). Il ne timeout JAMAIS sur une tâche LONGUE (rapport, recherche),
     # tout en coupant si le backend meurt vraiment. TOUS les envois device passent par _send
@@ -113,35 +108,18 @@ async def _run_eot_pipeline(ws, user_token, transcript, settings, from_conversin
             await _send({"type": "final", "transcript": transcript, "status": "not_directed"})
             return
 
-    # ── EN PARALLÈLE : vérif locuteur ∥ conversation ∥ mémoire ──────────
-    conv_task = asyncio.create_task(_resolve_conversation(user_token, transcript))
-    mem_task = asyncio.create_task(asyncio.to_thread(memory_service.retrieve, user_token, transcript))
-    verify = {"verified": True, "reason": "disabled"}
-    if verify_wav is not None:
-        try:
-            verify = await asyncio.to_thread(_verify_speaker, user_token, verify_wav)
-        except Exception as e:
-            logger.warning("[stream] verify error (fail-open): %s", e)
-            verify = {"verified": True, "reason": "error"}
-        if _speaker_blocked(verify):
-            conv_task.cancel()
-            mem_task.cancel()
-            logger.info("[stream] locuteur NON autorisé (%s, score=%.2f) → aucune réponse",
-                        verify.get("speaker_name"), verify.get("score") or 0.0)
-            _push_status(user_token, speaker=verify.get("speaker_name"),
-                         verified=False, speaker_score=verify.get("score"))
-            keepalive_stop.set()
-            await _send({"type": "rejected", "transcript": transcript,
-                         "speaker": verify.get("speaker_name"), "score": verify.get("score")})
-            return
-
-    # Badge locuteur vérifié (I6 : plus de badge périmé collé).
-    if verify.get("speaker_name"):
-        _push_status(user_token, speaker=verify.get("speaker_name"),
-                     verified=bool(verify.get("verified")), speaker_score=verify.get("score"))
+    # Badge locuteur = résultat reçu du DEVICE (vérif ECAPA faite sur le Pi). I6 : plus de
+    # badge périmé collé.
+    verify = verify or {}
+    if verify.get("name"):
+        _push_status(user_token, speaker=verify.get("name"),
+                     verified=bool(verify.get("verified", True)), speaker_score=verify.get("score"))
     else:
         _push_status(user_token, speaker=None, verified=None, speaker_score=None)
 
+    # I3 : conversation (Haiku) ∥ mémoire (RAG) en parallèle.
+    conv_task = asyncio.create_task(_resolve_conversation(user_token, transcript))
+    mem_task = asyncio.create_task(asyncio.to_thread(memory_service.retrieve, user_token, transcript))
     conv_id = await conv_task
     memories = await mem_task
     threading.Thread(target=_persist_msg, args=(user_token, conv_id, "user", transcript), daemon=True).start()
@@ -291,7 +269,7 @@ async def device_stream(ws: WebSocket):
         return
 
     done = asyncio.Event()
-    pcm_buffer = bytearray()                       # audio du tour → vérif locuteur (ECAPA) à l'EOT
+    speaker_future: asyncio.Future = asyncio.Future()   # verdict vérif locuteur (fait sur le Pi)
 
     async def flux_to_device():
         try:
@@ -315,14 +293,26 @@ async def device_stream(ws: WebSocket):
                     if not transcript:
                         await ws.send_json({"type": "final", "transcript": ""})
                         break
-                    # La VÉRIF LOCUTEUR (ECAPA ~10s) est faite DANS le pipeline, EN PARALLÈLE
-                    # avec resolve/mémoire (sinon 10s+12s séquentiels → timeout device). Un
-                    # anonyme est rejeté là-bas (aucun appel LLM/TTS). PCM du tour → WAV.
-                    verify_wav = (pcm_to_wav(bytes(pcm_buffer), sample_rate=16000)
-                                  if settings.STREAM_VERIFY_ENFORCE else None)
+                    # VÉRIF LOCUTEUR faite SUR LE PI (ECAPA local, zéro steal) → on attend
+                    # son verdict via {type:"speaker"} (~1-2s). Le backend ne fait plus d'ECAPA.
+                    if settings.STREAM_VERIFY_ENFORCE:
+                        try:
+                            verify = await asyncio.wait_for(speaker_future, timeout=10.0)
+                        except asyncio.TimeoutError:
+                            verify = {"verified": True, "name": None, "score": 0.0}  # fail-open
+                    else:
+                        verify = {"verified": True, "name": None, "score": 0.0}
+                    if not verify.get("verified", True):
+                        logger.info("[stream] locuteur NON autorisé (%s, score=%.2f) → aucune réponse",
+                                    verify.get("name"), verify.get("score") or 0.0)
+                        _push_status(user_token, speaker=verify.get("name"),
+                                     verified=False, speaker_score=verify.get("score"))
+                        await ws.send_json({"type": "rejected", "transcript": transcript,
+                                            "speaker": verify.get("name"), "score": verify.get("score")})
+                        break
                     try:
                         await _run_eot_pipeline(ws, user_token, transcript, settings,
-                                                from_conversing, verify_wav)
+                                                from_conversing, verify)
                     except Exception as e:   # I1/I7 : pas de 30s de silence
                         logger.error("[stream] pipeline KO: %s", e, exc_info=True)
                         try:
@@ -343,16 +333,23 @@ async def device_stream(ws: WebSocket):
                     break
                 chunk = data.get("bytes")
                 if chunk:
-                    pcm_buffer.extend(chunk)       # bufferise pour la vérif locuteur
                     await flux.send(chunk)         # PCM 16k binaire BRUT (pas de base64)
                     continue
                 txt = data.get("text")
                 if txt:
                     try:
-                        if json.loads(txt).get("type") == "cancel":
-                            break
+                        msg = json.loads(txt)
                     except Exception:
-                        pass
+                        continue
+                    if msg.get("type") == "cancel":
+                        break
+                    # Verdict de la vérif locuteur faite sur le Pi → débloque le gate.
+                    if msg.get("type") == "speaker" and not speaker_future.done():
+                        speaker_future.set_result({
+                            "verified": msg.get("verified", True),
+                            "name": msg.get("name") or None,
+                            "score": msg.get("score", 0.0),
+                        })
         except Exception as e:                     # I7 : déconnexion = normal → debug
             logger.debug("[stream] device_to_flux: %s", e)
         finally:
