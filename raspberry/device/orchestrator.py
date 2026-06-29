@@ -57,6 +57,7 @@ class Orchestrator:
         self.last_transcript = ""        # dernière commande (pour l'affichage live)
         self._stop_watch = False
         self._muted = threading.Event()  # mode confidentiel (mute logiciel à distance)
+        self._preroll = None             # audio du DÉBUT de commande (follow-up) à rejouer
         self._enroll_req = None          # demande d'enrôlement vocal poussée par le web
         self._enroll_seen_id = None      # id déjà traité (anti re-déclenchement pendant l'enrôlement)
         self._seq = 0                    # ordre monotone des états (anti-désordre)
@@ -335,6 +336,7 @@ class Orchestrator:
         le WS échoue OU si le backend renvoie une erreur AVANT tout progrès (→ l'appelant
         retombe sur l'ancien flux fiable). from_conversing → gating intent côté backend (I5)."""
         self._spoke = False                      # dette #9 : repart propre (garde MAX_WASTED)
+        preroll, self._preroll = self._preroll, None   # début de commande à rejouer (follow-up)
         play_beep()                              # FEEDBACK IMMÉDIAT au réveil (avant la connexion)
         url = stream_client.ws_url_from_http(config.CLOUD_BACKEND_URL)
         if from_conversing:
@@ -345,6 +347,12 @@ class Orchestrator:
         logger.info("[stream] LISTENING (Flux turn-taking) — parlez…")
         self._set_state("LISTENING")
         self.ambient.set_enabled(False)
+        # PRE-ROLL (follow-up cyan→vert) : le début du follow-up a été consommé pendant la
+        # détection de voix dans _conversing → on le REJOUE ici pour ne rien perdre.
+        if preroll is not None and len(preroll):
+            for i in range(0, len(preroll), config.FRAME_SAMPLES):
+                client.send_pcm(preroll[i:i + config.FRAME_SAMPLES].tobytes())
+            logger.info("[stream] pré-roll rejoué (%.1fs)", len(preroll) / config.SAMPLE_RATE)
         # PAS de mic.flush() ICI : on GARDE l'audio capté pendant le bip + la connexion =
         # le DÉBUT de ta commande (prononcé juste après « Dis Aura »). Le flush le jetait
         # → début de commande coupé. Flux ignore le bip (non-parole) et transcrit la commande.
@@ -604,6 +612,9 @@ class Orchestrator:
                     if self._user_in_window(win):
                         streak += 1
                         if streak >= 2:
+                            # PRE-ROLL : le début du follow-up a été consommé pendant la
+                            # détection → on le garde pour le rejouer au stream (sinon coupé).
+                            self._preroll = recent.copy()
                             return "LISTENING", True   # follow-up : ta voix détectée
                     else:
                         streak = 0
