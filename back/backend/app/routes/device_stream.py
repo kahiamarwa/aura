@@ -293,6 +293,9 @@ async def device_stream(ws: WebSocket):
                     if not transcript:
                         await ws.send_json({"type": "final", "transcript": ""})
                         break
+                    # Efface TOUT DE SUITE le badge du tour précédent (sinon le front affiche
+                    # l'ANCIEN locuteur X pendant la vérif, puis bascule sur Y → effet « X→Y »).
+                    _push_status(user_token, speaker=None, verified=None, speaker_score=None)
                     # VÉRIF LOCUTEUR faite SUR LE PI (ECAPA local, zéro steal) → on attend
                     # son verdict via {type:"speaker"} (~1-2s). Le backend ne fait plus d'ECAPA.
                     if settings.STREAM_VERIFY_ENFORCE:
