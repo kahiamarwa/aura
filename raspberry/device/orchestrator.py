@@ -335,18 +335,19 @@ class Orchestrator:
         le WS échoue OU si le backend renvoie une erreur AVANT tout progrès (→ l'appelant
         retombe sur l'ancien flux fiable). from_conversing → gating intent côté backend (I5)."""
         self._spoke = False                      # dette #9 : repart propre (garde MAX_WASTED)
+        play_beep()                              # FEEDBACK IMMÉDIAT au réveil (avant la connexion)
         url = stream_client.ws_url_from_http(config.CLOUD_BACKEND_URL)
         if from_conversing:
             url += "?from_conversing=1"
         client = stream_client.StreamClient(url, config.DEVICE_TOKEN)
         if not client.connect():
             return None                          # WS KO → fallback ancien flux
-        play_beep()
         logger.info("[stream] LISTENING (Flux turn-taking) — parlez…")
         self._set_state("LISTENING")
         self.ambient.set_enabled(False)
-        if getattr(self, "mic", None):
-            self.mic.flush()
+        # PAS de mic.flush() ICI : on GARDE l'audio capté pendant le bip + la connexion =
+        # le DÉBUT de ta commande (prononcé juste après « Dis Aura »). Le flush le jetait
+        # → début de commande coupé. Flux ignore le bip (non-parole) et transcrit la commande.
         deadline = time.monotonic() + config.CMD_MAX_S   # C1 : deadline MURALE (indép. des frames)
         progressed = False                               # I1 : reçu partial/turn_end ?
         transcript = ""

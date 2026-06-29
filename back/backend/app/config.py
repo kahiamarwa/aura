@@ -40,9 +40,9 @@ class Settings(BaseSettings):
     # Deepgram Flux (chemin B) : seuil de confiance fin de tour (0.5-0.9 ; ↑ = plus
     # patient, attend que tu aies vraiment fini).
     FLUX_EOT_THRESHOLD: float = 0.7
-    # Filet : fin de tour forcée après ce silence (ms), même sous le seuil. 5000 =
-    # défaut Deepgram ; 2500-3000 plus réactif en français. Configurable (I8).
-    FLUX_EOT_TIMEOUT_MS: int = 3000
+    # Filet : fin de tour forcée après ce silence (ms), même sous le seuil. Plus HAUT =
+    # tolère les pauses/hésitations sans couper. 5000 = défaut Deepgram. Configurable (I8).
+    FLUX_EOT_TIMEOUT_MS: int = 5000
 
     # Vérif locuteur en mode STREAMING (chemin B) : un locuteur NON enrôlé ne reçoit
     # AUCUNE réponse — le backend gate AVANT le LLM (ECAPA sur le PCM bufferisé du tour).
