@@ -11,6 +11,7 @@ None et l'orchestrateur retombe sur l'endpointing énergie/VAD.
 """
 
 import os
+import time
 import logging
 from pathlib import Path
 
@@ -60,18 +61,24 @@ class TargetSpeaker:
 
     # ── Empreintes de référence (cache depuis le cloud) ──────────────
     def load_references(self):
-        """Récupère les empreintes enrôlées de l'utilisateur depuis le cloud."""
+        """Récupère les empreintes enrôlées depuis le cloud. RETRY (le VPS lent fait
+        parfois échouer/timeout le fetch au démarrage → sans ça, vérif fail-open)."""
         if not self.available:
             return
-        try:
-            self._refs = cloud.fetch_user_embeddings()
-            if self._refs:
-                logger.info("[TargetSpeaker] %d empreinte(s) en cache", len(self._refs))
-            else:
+        for attempt in range(4):
+            try:
+                self._refs = cloud.fetch_user_embeddings()
+                if self._refs:
+                    logger.info("[TargetSpeaker] %d empreinte(s) en cache", len(self._refs))
+                    return
                 logger.info("[TargetSpeaker] aucune voix enrôlée → fallback énergie/VAD")
-        except Exception as e:
-            logger.warning("[TargetSpeaker] chargement empreintes échoué: %s", e)
-            self._refs = []
+                return
+            except Exception as e:
+                logger.warning("[TargetSpeaker] chargement empreintes échoué (essai %d/4): %s",
+                               attempt + 1, e)
+                time.sleep(2.0)
+        self._refs = []
+        logger.warning("[TargetSpeaker] empreintes NON chargées après 4 essais → vérif fail-open")
 
     @property
     def has_reference(self) -> bool:

@@ -715,5 +715,7 @@ async def device_speaker_embeddings(raw_request: Request):
             ]
         }
     except Exception as e:
+        # NE PAS renvoyer [] en silence (le device le cacherait comme « aucune voix » →
+        # vérif fail-open). On lève → le device retry (load_references). Transitoire sur VPS lent.
         logger.warning("[device] embeddings fetch error: %s", e)
-        return {"embeddings": []}
+        raise HTTPException(status_code=503, detail="embeddings unavailable")
