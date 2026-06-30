@@ -80,6 +80,20 @@ class TargetSpeaker:
         self._refs = []
         logger.warning("[TargetSpeaker] empreintes NON chargées après 4 essais → vérif fail-open")
 
+    def try_load_references(self) -> bool:
+        """UNE tentative silencieuse de chargement (pour le rechargement en arrière-plan).
+        True si des empreintes ont été chargées."""
+        if not self.available:
+            return False
+        try:
+            refs = cloud.fetch_user_embeddings()
+            if refs:
+                self._refs = refs
+                return True
+        except Exception:
+            pass
+        return False
+
     @property
     def has_reference(self) -> bool:
         return self.available and len(self._refs) > 0

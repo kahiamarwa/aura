@@ -629,8 +629,21 @@ class Orchestrator:
         return "IDLE", False
 
     # ── Boucle principale ────────────────────────────────────────────
+    def _embeddings_loader(self):
+        """Recharge les empreintes en arrière-plan tant qu'elles ne sont pas chargées
+        (ex : backend down/rebuild au démarrage → récupère tout seul, SANS relance du device)."""
+        while not self._stop_watch and self.target.available and not self.target.has_reference:
+            time.sleep(20.0)
+            if self.target.try_load_references():
+                logger.info("[TargetSpeaker] %d empreinte(s) chargées en arrière-plan ✓ "
+                            "→ vérif locuteur active", len(self.target._refs))
+                return
+
     def run(self):
         self.target.load_references()   # cache l'empreinte vocale (endpointing local)
+        if self.target.available and not self.target.has_reference:
+            # backend down/rebuild au démarrage → on recharge en fond (récupère sans relance)
+            threading.Thread(target=self._embeddings_loader, daemon=True).start()
         if config.AEC_ENABLED:
             logger.info("[AEC] activé — audio via « %s » (annulation d'écho PipeWire)", config.AEC_ALSA_DEVICE)
         else:
