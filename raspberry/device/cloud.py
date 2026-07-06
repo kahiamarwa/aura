@@ -161,6 +161,24 @@ def push_state(state: str, transcript: str = "", seq: int = 0) -> None:
         pass
 
 
+def send_wake_events(events: list) -> None:
+    """Pousse la télémétrie wake par lot. Fire-and-forget : jamais d'exception.
+
+    Même auth/URL que les autres appels device (X-Device-Token via _headers()).
+    Timeout court : ce flush périodique ne doit jamais retarder quoi que ce soit.
+    """
+    if not events:
+        return
+    if not (config.DEVICE_TOKEN or get_access_token()):
+        return
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            client.post(_url("/api/device/wake-events"), headers=_headers(),
+                        json={"events": events})
+    except Exception as e:
+        logger.debug("[wake-telemetry] envoi KO (%d events perdus): %s", len(events), e)
+
+
 def get_mute_state() -> bool:
     """Lit le flag mute distant (mode confidentiel), poussé par le web. Poll léger.
 

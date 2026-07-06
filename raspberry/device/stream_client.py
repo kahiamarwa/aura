@@ -89,6 +89,11 @@ class StreamClient:
         self._send_json({"type": "speaker", "verified": bool(verified),
                          "name": name or "", "score": round(float(score), 4)})
 
+    def send_force_eot(self):
+        """FIN DE COMMANDE MANUELLE (« Stop Aura » pendant la capture) : en milieu
+        bruyant, Flux ne détecte jamais la fin de tour — l'utilisateur la force."""
+        self._send_json({"type": "force_eot"})
+
     def _send_json(self, obj):
         try:
             self._ws.send(json.dumps(obj))

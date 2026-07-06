@@ -72,6 +72,11 @@ class Orchestrator:
         """
         self.state = new
         self._seq += 1
+        # Télémétrie wake (P6.1) : le détecteur horodate ses events avec l'état courant.
+        try:
+            self.wake.state_hint = new
+        except Exception:
+            pass
         self.led.set_state(new)          # LED physique suit l'état (comme l'orbe)
         tr = transcript if transcript is not None else (
             self.last_transcript if new in ("THINKING", "SPEAKING") else "")
@@ -92,6 +97,19 @@ class Orchestrator:
                 cloud.push_state(self.state, "", self._seq)   # heartbeat
                 continue
             cloud.push_state(state, tr, seq)
+
+    def _wake_telemetry_pusher(self):
+        """Flush périodique de la télémétrie wake : draine le buffer du détecteur toutes
+        les 25 s et l'envoie au cloud (fire-and-forget). Non bloquant : jamais dans la
+        boucle audio. Une erreur réseau n'interrompt PAS le thread (les events perdus)."""
+        while not self._stop_watch:
+            time.sleep(25.0)
+            try:
+                evs = self.wake.drain_events()
+                if evs:
+                    cloud.send_wake_events(evs)
+            except Exception:
+                pass
 
     def _push_enroll(self, transcript: str):
         """Pousse l'état ENROLLING + avancement au web SANS toucher la LED (le flux
@@ -361,6 +379,7 @@ class Orchestrator:
         progressed = False                               # I1 : reçu partial/turn_end ?
         transcript = ""
         turn_ended = False
+        eot_forced = False                       # « Stop Aura » = fin de commande (1×/tour)
         while not turn_ended:
             try:
                 frame = next(frames)
@@ -368,6 +387,12 @@ class Orchestrator:
                 break
             client.send_pcm(frame.tobytes())
             cmd_audio.append(frame)              # bufferise pour la vérif locuteur LOCALE
+            # « Stop Aura » pendant la prise de commande = FIN DE COMMANDE manuelle
+            # (milieu bruyant : Flux ne coupe jamais). Une seule fois par tour.
+            if not eot_forced and self.wake.process_interrupt_only(frame) == "interrupt":
+                logger.info("[stream] force EOT (« Stop Aura » pendant la capture)")
+                client.send_force_eot()
+                eot_forced = True
             while True:                          # messages backend (non bloquant)
                 m = client.recv(timeout=0.0)
                 if m is None:
@@ -651,6 +676,7 @@ class Orchestrator:
                            "pendant la lecture. Active l'AEC (setup_aec.sh + AEC_ENABLED=1) pour un arrêt fiable.")
         self.ambient.start()
         threading.Thread(target=self._state_pusher, daemon=True).start()  # états → front (ordre garanti)
+        threading.Thread(target=self._wake_telemetry_pusher, daemon=True).start()  # télémétrie wake → cloud (flush 25s)
         if config.MUTE_POLL_S > 0:
             threading.Thread(target=self._mute_poller, daemon=True).start()  # mute distant (mode confidentiel)
         logger.info("Aura prêt. Dites « Dis Aura ».")
