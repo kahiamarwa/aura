@@ -173,6 +173,11 @@ CMD_FORCE_GRACE_S = float(os.getenv("CMD_FORCE_GRACE_S", "8"))
 # que le 0.85 anti-écho du SPEAKING. Terrain 06/07 : vrais « Stop Aura » à 0.65-0.99.
 # Un faux positif ici SOUMET la commande (bénin) — il ne la jette pas.
 STOP_CAPTURE_THRESHOLD = float(os.getenv("STOP_CAPTURE_THRESHOLD", "0.5"))
+# Stop-guard anti-écho TTS (AEC off) : un « Stop Aura » pendant la LECTURE n'est accepté
+# que si la voix ressemble à un locuteur enrôlé (ECAPA local). La voix TTS d'Aura score
+# ~0 face aux empreintes (terrain 06/07 : écho à 0.97 coupait la génération PPTX).
+INTERRUPT_SPEAKER_GATE = os.getenv("INTERRUPT_SPEAKER_GATE", "1") == "1"
+INTERRUPT_VERIFY_MIN = float(os.getenv("INTERRUPT_VERIFY_MIN", "0.18"))
 
 # ── Endpointing par LOCUTEUR CIBLE (robuste en milieu bruyant) ───────
 # ON : marche bien sur une commande medium/longue (assez d'audio pour identifier

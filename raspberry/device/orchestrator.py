@@ -256,6 +256,26 @@ class Orchestrator:
             return False
         return True
 
+    def _interrupt_is_owner(self, audio: np.ndarray) -> bool:
+        """Anti-écho TTS (AEC off) : « Stop Aura » PENDANT LA LECTURE n'est accepté que
+        si la voix ressemble à un locuteur ENRÔLÉ — la voix TTS d'Aura score ~0 face aux
+        empreintes (terrain 06/07 : écho à 0.97 → coupure en pleine génération PPTX).
+        Seuil BAS dédié (un vrai « stop aura » est court → score modeste ~0.3).
+        Fail-open : sans empreintes / audio trop court / erreur → on accepte."""
+        if not config.INTERRUPT_SPEAKER_GATE or not self.target.has_reference:
+            return True
+        if audio is None or len(audio) < int(0.4 * config.SAMPLE_RATE):
+            return True
+        try:
+            _, score = self.target.is_target(audio)
+            if score >= config.INTERRUPT_VERIFY_MIN:
+                return True
+            logger.info("[stop-guard] interrupt REJETÉ (voix score=%.2f < %.2f — écho TTS ?)",
+                        score, config.INTERRUPT_VERIFY_MIN)
+            return False
+        except Exception:
+            return True
+
     # ── Helper : la fenêtre contient-elle la voix de l'UTILISATEUR ? ──
     def _user_in_window(self, window: np.ndarray) -> bool:
         """True si la voix de l'utilisateur enrôlé est présente (locuteur cible).
@@ -516,6 +536,8 @@ class Orchestrator:
         t.start()
         # Boucle principale : micro EN CONTINU → « Stop Aura » coupe immédiatement.
         spoke_at = None
+        ring = np.zeros(0, dtype=np.int16)              # fenêtre voix pour le stop-guard
+        ring_max = int(1.5 * config.SAMPLE_RATE)
         while not done.is_set():
             # Garde-fou : si mpg123 fige sur une sortie audio cassée, ne JAMAIS rester
             # bloqué sur SPEAKING — on coupe au bout de SPEAK_MAX_S.
@@ -531,7 +553,10 @@ class Orchestrator:
                 frame = next(frames)
             except StopIteration:
                 break
+            ring = np.concatenate([ring, frame])[-ring_max:]
             if self.wake.process_interrupt_only(frame) == "interrupt":   # C2 : interrupt-only
+                if not self._interrupt_is_owner(ring):
+                    continue                             # écho TTS / voix non enrôlée → on ne coupe PAS
                 logger.info("[stream] STOP — coupure")
                 stop.set()
                 self.player.stop()
@@ -600,14 +625,19 @@ class Orchestrator:
         win_max = int(1.0 * config.SAMPLE_RATE)
         hop = 0.0
         streak = 0
+        ring = np.zeros(0, dtype=np.int16)              # fenêtre voix pour le stop-guard
+        ring_max = int(1.5 * config.SAMPLE_RATE)
         while self.player.is_playing or t.is_alive():
             try:
                 frame = next(frames)
             except StopIteration:
                 break
+            ring = np.concatenate([ring, frame])[-ring_max:]
             # « Stop Aura » = je veux le SILENCE → on coupe et on s'arrête (IDLE).
             # interrupt-only : l'écho TTS ne doit pas réarmer le cooldown du wake (C2).
             if self.wake.process_interrupt_only(frame) == "interrupt":
+                if not self._interrupt_is_owner(ring):
+                    continue                             # écho TTS / voix non enrôlée → on ne coupe PAS
                 logger.info("[state] STOP — coupure (silence)")
                 self._teardown_speak(t, stop, res)
                 return "stop"
