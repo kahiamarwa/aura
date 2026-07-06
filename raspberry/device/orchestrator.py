@@ -375,7 +375,12 @@ class Orchestrator:
         # le DÉBUT de ta commande (prononcé juste après « Dis Aura »). Le flush le jetait
         # → début de commande coupé. Flux ignore le bip (non-parole) et transcrit la commande.
         cmd_audio = [preroll] if (preroll is not None and len(preroll)) else []  # buffer vérif locale
-        deadline = time.monotonic() + config.CMD_MAX_S   # C1 : deadline MURALE (indép. des frames)
+        # PLUS DE CAP 20s : la capture est ILLIMITÉE — c'est l'utilisateur qui clôt
+        # (« Stop Aura ») ou Flux (fin de tour détectée). Le cap jetait la commande à 20s
+        # pile pendant que « Stop Aura » la soumettait (course du 06/07, commande perdue).
+        # Filet TRÈS long (CMD_HARD_CAP_S, 0=désactivé) : au-delà on SOUMET (jamais jeter).
+        hard_cap = (time.monotonic() + config.CMD_HARD_CAP_S) if config.CMD_HARD_CAP_S > 0 else None
+        grace_deadline = None                    # armée après force_eot : borne l'attente du turn_end
         progressed = False                               # I1 : reçu partial/turn_end ?
         transcript = ""
         turn_ended = False
@@ -393,6 +398,7 @@ class Orchestrator:
                 logger.info("[stream] force EOT (« Stop Aura » pendant la capture)")
                 client.send_force_eot()
                 eot_forced = True
+                grace_deadline = time.monotonic() + config.CMD_FORCE_GRACE_S
             while True:                          # messages backend (non bloquant)
                 m = client.recv(timeout=0.0)
                 if m is None:
@@ -420,11 +426,21 @@ class Orchestrator:
                         logger.warning("[stream] erreur backend précoce (%s) → fallback ancien flux", kind)
                         return None
                     return "CONVERSING", False    # tour réellement vide → on revient
-            if time.monotonic() >= deadline:     # C1 : ne dépend PAS de l'arrivée des frames
-                logger.info("[stream] cap %.0fs (deadline murale)", config.CMD_MAX_S)
+            now_mono = time.monotonic()
+            if grace_deadline is not None and now_mono >= grace_deadline:
+                # force_eot envoyé mais AUCUN turn_end après la grâce → backend muet, on sort
+                logger.warning("[stream] pas de turn_end %.0fs après force EOT → abandon",
+                               config.CMD_FORCE_GRACE_S)
                 client.send_cancel()
                 client.close()
                 return "IDLE", False
+            if hard_cap is not None and not eot_forced and now_mono >= hard_cap:
+                # filet anti-blocage (très long) : on SOUMET la commande, on ne la jette pas
+                logger.info("[stream] filet %.0fs → soumission forcée de la commande",
+                            config.CMD_HARD_CAP_S)
+                client.send_force_eot()
+                eot_forced = True
+                grace_deadline = time.monotonic() + config.CMD_FORCE_GRACE_S
         # turn_end à transcript VIDE → inutile de lancer mpg123 (dette #1/#12)
         if not transcript:
             logger.info("[stream] tour vide → CONVERSING (pas de lecture)")

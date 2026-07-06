@@ -162,8 +162,13 @@ VAD_SILENCE_FRAMES = 20        # frames de silence pour clore (~0.6s à 32ms/fra
 # ── Capture de la commande ───────────────────────────────────────────
 CMD_SILENCE_RMS = float(os.getenv("CMD_SILENCE_RMS", "300"))   # seuil énergie de SECOURS (si Silero VAD indispo)
 CMD_SILENCE_HANG_S = 1.0      # silence consécutif pour clore la commande
-CMD_MAX_S = float(os.getenv("CMD_MAX_S", "20"))   # cap de sécurité (configurable) — long commandes OK
+CMD_MAX_S = float(os.getenv("CMD_MAX_S", "20"))   # cap de sécurité (ANCIEN chemin non-streaming uniquement)
 CMD_MIN_SPEECH_S = 0.3        # parole min pour considérer une vraie commande
+# Chemin STREAMING (Flux) : capture ILLIMITÉE — clôture par « Stop Aura » ou Flux.
+# Filet anti-blocage très long qui SOUMET la commande (jamais jeter). 0 = désactivé.
+CMD_HARD_CAP_S = float(os.getenv("CMD_HARD_CAP_S", "300"))
+# Grâce après un force EOT : temps laissé au backend pour renvoyer turn_end.
+CMD_FORCE_GRACE_S = float(os.getenv("CMD_FORCE_GRACE_S", "8"))
 
 # ── Endpointing par LOCUTEUR CIBLE (robuste en milieu bruyant) ───────
 # ON : marche bien sur une commande medium/longue (assez d'audio pour identifier
