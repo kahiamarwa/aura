@@ -169,6 +169,10 @@ CMD_MIN_SPEECH_S = 0.3        # parole min pour considérer une vraie commande
 CMD_HARD_CAP_S = float(os.getenv("CMD_HARD_CAP_S", "300"))
 # Grâce après un force EOT : temps laissé au backend pour renvoyer turn_end.
 CMD_FORCE_GRACE_S = float(os.getenv("CMD_FORCE_GRACE_S", "8"))
+# Seuil « Stop Aura » PENDANT LA CAPTURE (Aura muette → pas d'écho TTS) : bien plus bas
+# que le 0.85 anti-écho du SPEAKING. Terrain 06/07 : vrais « Stop Aura » à 0.65-0.99.
+# Un faux positif ici SOUMET la commande (bénin) — il ne la jette pas.
+STOP_CAPTURE_THRESHOLD = float(os.getenv("STOP_CAPTURE_THRESHOLD", "0.5"))
 
 # ── Endpointing par LOCUTEUR CIBLE (robuste en milieu bruyant) ───────
 # ON : marche bien sur une commande medium/longue (assez d'audio pour identifier

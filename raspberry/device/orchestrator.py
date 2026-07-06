@@ -394,7 +394,8 @@ class Orchestrator:
             cmd_audio.append(frame)              # bufferise pour la vérif locuteur LOCALE
             # « Stop Aura » pendant la prise de commande = FIN DE COMMANDE manuelle
             # (milieu bruyant : Flux ne coupe jamais). Une seule fois par tour.
-            if not eot_forced and self.wake.process_interrupt_only(frame) == "interrupt":
+            if not eot_forced and self.wake.process_interrupt_only(
+                    frame, threshold=config.STOP_CAPTURE_THRESHOLD) == "interrupt":
                 logger.info("[stream] force EOT (« Stop Aura » pendant la capture)")
                 client.send_force_eot()
                 eot_forced = True

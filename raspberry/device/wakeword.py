@@ -110,18 +110,22 @@ class WakeWord:
                 self._record("near_miss", best, preds[best], frame_int16, now)
         return None
 
-    def process_interrupt_only(self, frame_int16: np.ndarray) -> str | None:
+    def process_interrupt_only(self, frame_int16: np.ndarray, threshold: float | None = None) -> str | None:
         """N'évalue QUE « Stop Aura » (avec SON cooldown). À utiliser PENDANT la lecture
         (SPEAKING) : ainsi l'écho TTS ne peut pas déclencher un faux « activate » qui
-        réarmerait le cooldown et masquerait un vrai « Stop Aura » (C2). 'interrupt' ou None."""
+        réarmerait le cooldown et masquerait un vrai « Stop Aura » (C2). 'interrupt' ou None.
+
+        `threshold` : override CONTEXTUEL. Pendant la CAPTURE (Aura muette → pas d'écho),
+        le seuil 0.85 anti-écho est inutilement strict — les vrais « Stop Aura » scorent
+        0.65-0.99 (terrain 06/07 : 0.66 rejeté → commande perdue). La capture passe ~0.5."""
         if not self._interrupt_key:
             return None
         now = time.time()
         score = self.model.predict(frame_int16).get(self._interrupt_key, 0.0)
+        eff = threshold if threshold is not None else self.thresholds.get(self._interrupt_key, 0.5)
         if config.WAKE_DEBUG and score > 0.1:
-            logger.info("[wake] (interrupt-only) pic=%.3f seuil=%.2f", score,
-                        self.thresholds.get(self._interrupt_key, 0.5))
-        if score >= self.thresholds.get(self._interrupt_key, 0.5) and \
+            logger.info("[wake] (interrupt-only) pic=%.3f seuil=%.2f", score, eff)
+        if score >= eff and \
                 now - self._last.get(self._interrupt_key, 0.0) >= self.cooldown:
             self._last[self._interrupt_key] = now
             logger.info("[WakeWord] INTERRUPT (%s=%.2f)", self._interrupt_key, score)
