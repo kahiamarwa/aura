@@ -598,6 +598,16 @@ class Orchestrator:
                                 flags["failed"] = True
                                 break
                         self.player.feed(data)           # peut bloquer (backpressure) — OK, thread dédié
+                    elif kind == "audio_flush":
+                        # P10-T3 : fin d'une phrase de CONFORT, un gap suit (outil en cours).
+                        # Sans drain, libmpg123 garde les dernières frames MP3 non décodées en
+                        # attendant la suivante + ALSA plughw:2 (pas de dmix) underrun → la fin
+                        # de phrase (~50-300 ms) est avalée. end_stream() bloque jusqu'à la fin
+                        # de lecture — borné (≤ 1 phrase courte) et OK ici : le micro tourne
+                        # dans la boucle principale. Le prochain chunk relancera start_stream().
+                        if started:
+                            self.player.end_stream()
+                            started = False
                     elif kind == "rejected":
                         logger.info("[stream] locuteur non autorisé — aucune réponse")
                         flags["rejected"] = True

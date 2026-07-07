@@ -22,8 +22,10 @@ logger = logging.getLogger(__name__)
 
 def _mpg123_cmd() -> list[str]:
     """Commande mpg123 (MP3 sur stdin). Si AEC activé, sort via le bridge ALSA→
-    PipeWire (config.PLAYBACK_ALSA_DEVICE) pour servir de référence d'écho."""
-    cmd = ["mpg123", "-q"]
+    PipeWire (config.PLAYBACK_ALSA_DEVICE) pour servir de référence d'écho.
+    -b 512 (P10-T3) : buffer PCM de sortie (KiB, process séparé) — anti-underrun
+    sur plughw (pas de dmix) quand le flux MP3 arrive en pointillé."""
+    cmd = ["mpg123", "-q", "-b", "512"]
     if config.PLAYBACK_ALSA_DEVICE:
         cmd += ["-o", "alsa", "-a", config.PLAYBACK_ALSA_DEVICE]
     cmd.append("-")
@@ -311,7 +313,10 @@ class Player:
     def stop(self):
         p = self._proc
         if p and p.poll() is None:
-            p.terminate()
+            try:
+                p.terminate()                # process peut sortir entre poll() et terminate()
+            except Exception:                # (course avec un end_stream() en cours de drain)
+                pass
             try:
                 p.wait(timeout=1.0)          # reaper (évite les zombies defunct)
             except Exception:
