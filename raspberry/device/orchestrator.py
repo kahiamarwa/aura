@@ -538,6 +538,7 @@ class Orchestrator:
         spoke_at = None
         ring = np.zeros(0, dtype=np.int16)              # fenêtre voix pour le stop-guard
         ring_max = int(1.5 * config.SAMPLE_RATE)
+        last_guard_reject = -1e9                        # règle d'insistance (2e stop < 8s)
         while not done.is_set():
             # Garde-fou : si mpg123 fige sur une sortie audio cassée, ne JAMAIS rester
             # bloqué sur SPEAKING — on coupe au bout de SPEAK_MAX_S.
@@ -556,9 +557,14 @@ class Orchestrator:
             ring = np.concatenate([ring, frame])[-ring_max:]
             if self.wake.process_interrupt_only(
                     frame, threshold=config.STOP_SPEAKING_THRESHOLD) == "interrupt":   # C2 : interrupt-only
-                if not self._interrupt_is_owner(ring):
-                    continue                             # écho TTS / voix non enrôlée → on ne coupe PAS
-                logger.info("[stream] STOP — coupure")
+                # RÈGLE D'INSISTANCE (terrain 07/07) : en milieu très bruyant (TTS+YouTube),
+                # la voix mélangée peut échouer la vérif ECAPA. Un humain RÉPÈTE ; un écho
+                # ne se re-déclenche pas après reset → 2e stop < STOP_INSIST_S = on coupe.
+                insisting = time.monotonic() - last_guard_reject < config.STOP_INSIST_S
+                if not insisting and not self._interrupt_is_owner(ring):
+                    last_guard_reject = time.monotonic()
+                    continue                             # 1er rejet : peut-être écho → on attend l'insistance
+                logger.info("[stream] STOP — coupure%s", " (insistance)" if insisting else "")
                 stop.set()
                 self.player.stop()
                 client.send_cancel()                                     # dette #16 : teardown propre
@@ -628,6 +634,7 @@ class Orchestrator:
         streak = 0
         ring = np.zeros(0, dtype=np.int16)              # fenêtre voix pour le stop-guard
         ring_max = int(1.5 * config.SAMPLE_RATE)
+        last_guard_reject = -1e9                        # règle d'insistance (2e stop < 8s)
         while self.player.is_playing or t.is_alive():
             try:
                 frame = next(frames)
@@ -638,9 +645,11 @@ class Orchestrator:
             # interrupt-only : l'écho TTS ne doit pas réarmer le cooldown du wake (C2).
             if self.wake.process_interrupt_only(
                     frame, threshold=config.STOP_SPEAKING_THRESHOLD) == "interrupt":
-                if not self._interrupt_is_owner(ring):
-                    continue                             # écho TTS / voix non enrôlée → on ne coupe PAS
-                logger.info("[state] STOP — coupure (silence)")
+                insisting = time.monotonic() - last_guard_reject < config.STOP_INSIST_S
+                if not insisting and not self._interrupt_is_owner(ring):
+                    last_guard_reject = time.monotonic()
+                    continue                             # 1er rejet : peut-être écho → attente d'insistance
+                logger.info("[state] STOP — coupure (silence)%s", " (insistance)" if insisting else "")
                 self._teardown_speak(t, stop, res)
                 return "stop"
             # Barge-in par TA VOIX (tu parles par-dessus) = tu enchaînes → on t'écoute.
