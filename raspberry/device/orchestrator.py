@@ -554,7 +554,8 @@ class Orchestrator:
             except StopIteration:
                 break
             ring = np.concatenate([ring, frame])[-ring_max:]
-            if self.wake.process_interrupt_only(frame) == "interrupt":   # C2 : interrupt-only
+            if self.wake.process_interrupt_only(
+                    frame, threshold=config.STOP_SPEAKING_THRESHOLD) == "interrupt":   # C2 : interrupt-only
                 if not self._interrupt_is_owner(ring):
                     continue                             # écho TTS / voix non enrôlée → on ne coupe PAS
                 logger.info("[stream] STOP — coupure")
@@ -635,7 +636,8 @@ class Orchestrator:
             ring = np.concatenate([ring, frame])[-ring_max:]
             # « Stop Aura » = je veux le SILENCE → on coupe et on s'arrête (IDLE).
             # interrupt-only : l'écho TTS ne doit pas réarmer le cooldown du wake (C2).
-            if self.wake.process_interrupt_only(frame) == "interrupt":
+            if self.wake.process_interrupt_only(
+                    frame, threshold=config.STOP_SPEAKING_THRESHOLD) == "interrupt":
                 if not self._interrupt_is_owner(ring):
                     continue                             # écho TTS / voix non enrôlée → on ne coupe PAS
                 logger.info("[state] STOP — coupure (silence)")

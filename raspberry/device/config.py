@@ -108,12 +108,17 @@ OPENWAKE_DIR = Path(os.getenv("OPENWAKE_DIR", _REPO_ROOT / "openwake"))
 ACTIVATE_MODEL = os.getenv("ACTIVATE_MODEL", "Aura_test.onnx")  # "Dis Aura"
 INTERRUPT_MODEL = os.getenv("INTERRUPT_MODEL", "stop_aura.onnx")  # "Stop Aura"
 WAKE_THRESHOLDS = {
-    # 0.4 (était 0.6) : « Dis Aura » dépassait rarement 0.6 → 3-4 essais. Affiner
-    # avec WAKE_DEBUG=1 (qui logge le pic réel) puis figer au point de séparation.
-    Path(ACTIVATE_MODEL).stem: float(os.getenv("ACTIVATE_THRESHOLD", "0.4")),
+    # 0.35 (était 0.4) : télémétrie wake_events du 06-07/07 — 7 tentatives réelles
+    # ratées à 0.25-0.40 (score moy 0.33, RMS 0.089 = signal fort). Les faux positifs
+    # résiduels sont filtrés par le gate locuteur (_wake_is_owner).
+    Path(ACTIVATE_MODEL).stem: float(os.getenv("ACTIVATE_THRESHOLD", "0.35")),
     # stop_aura plus strict : il faux-déclenche sur la parole ambiante
     Path(INTERRUPT_MODEL).stem: float(os.getenv("INTERRUPT_THRESHOLD", "0.85")),
 }
+# Seuil « Stop Aura » PENDANT LA LECTURE : 0.70 (était le 0.85 global) — télémétrie :
+# 27 vrais « Stop Aura » avalés entre 0.50-0.85. L'écho TTS n'est plus bloqué par le
+# seuil mais par le stop-guard ECAPA (_interrupt_is_owner) → on peut être sensible.
+STOP_SPEAKING_THRESHOLD = float(os.getenv("STOP_SPEAKING_THRESHOLD", "0.70"))
 # WAKE_DEBUG=1 : logge le pic de score du wake word à CHAQUE frame (>0.1) pour
 # calibrer le seuil empiriquement. À couper en prod (verbeux).
 WAKE_DEBUG = os.getenv("WAKE_DEBUG", "0") == "1"
