@@ -690,7 +690,9 @@ class Orchestrator:
             if time.time() >= deadline:
                 return "IDLE", False
             recent = np.concatenate([recent, frame])[-recent_max:]
-            ev = self.wake.process(frame)
+            # Aura est MUETTE en CONVERSING → pas d'écho TTS → seuil « Stop Aura »
+            # sensible (0.5, comme la capture). Terrain 07/07 : stops 0.5-0.8 avalés à 0.85.
+            ev = self.wake.process(frame, interrupt_threshold=config.STOP_CAPTURE_THRESHOLD)
             if ev == "interrupt":
                 return "IDLE", False             # « Stop Aura » = ARRÊTER (pas écouter)
             if ev == "activate" and self._wake_is_owner(recent):

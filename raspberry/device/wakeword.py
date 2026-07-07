@@ -83,9 +83,13 @@ class WakeWord:
         logger.info("[WakeWord] ACTIVATE (%s=%.2f)", name, score)
         return "activate"
 
-    def process(self, frame_int16: np.ndarray) -> str | None:
+    def process(self, frame_int16: np.ndarray, interrupt_threshold: float | None = None) -> str | None:
         """Retourne 'activate', 'interrupt' ou None pour une frame de 1280 samples.
-        Cooldown indépendant par modèle (un déclenchement d'un modèle ne bloque pas l'autre)."""
+        Cooldown indépendant par modèle (un déclenchement d'un modèle ne bloque pas l'autre).
+
+        `interrupt_threshold` : override contextuel du seuil « Stop Aura » — en CONVERSING,
+        Aura est MUETTE (aucun écho TTS) donc le 0.85 anti-écho est inutilement strict
+        (terrain 07/07 : stops à 0.5-0.8 avalés en mode suivi avec bruit ambiant)."""
         now = time.time()
         preds = self.model.predict(frame_int16)
         # Calibration : logge le pic réel (même sous le seuil) → savoir si le seuil
@@ -97,7 +101,10 @@ class WakeWord:
                 logger.info("[wake] pic=%.3f (%s) seuil=%.2f rms=%.4f", preds[name], name,
                             self.thresholds.get(name, 0.5), rms)
         for name, score in preds.items():
-            if score >= self.thresholds.get(name, 0.5) and now - self._last.get(name, 0.0) >= self.cooldown:
+            thr = self.thresholds.get(name, 0.5)
+            if interrupt_threshold is not None and name == self._interrupt_key:
+                thr = interrupt_threshold
+            if score >= thr and now - self._last.get(name, 0.0) >= self.cooldown:
                 ev = self._emit(name, score, now)
                 self._record("trigger_interrupt" if ev == "interrupt" else "trigger_activate",
                              name, score, frame_int16, now)
