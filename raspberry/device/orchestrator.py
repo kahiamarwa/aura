@@ -7,12 +7,14 @@ Machine à états (comme useAuraSession côté web) :
   THINKING  → cloud : STT → [intent si conversing] → speaker verif → LLM → TTS
   SPEAKING  → joue la réponse ; « Stop Aura » ou parole forte = barge-in
               ANTI-ÉCHO : le wake word « activate » est ignoré pendant la lecture
-  CONVERSING→ fenêtre 12 s : on peut reparler SANS wake word ; sinon → IDLE
+  CONVERSING→ fenêtre CONVERSATION_WINDOW_S (8 s défaut) : on peut reparler SANS
+              wake word (parole détectée au VAD → capture) ; sinon → IDLE
 
 Le device ne fait localement que : wake word, VAD, capture/lecture audio,
 machine à états. STT / intent / speaker verif / LLM / TTS + clés = cloud.
 """
 
+import os
 import sys
 import time
 import queue
@@ -38,6 +40,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("orchestrator")
 
 FRAME_S = config.FRAME_SAMPLES / config.SAMPLE_RATE
+
+# P10.1 : nb de frames voisées consécutives (Silero VAD) pour déclencher le follow-up
+# cyan→vert. Une frame = 80 ms → 3 frames ≈ 240 ms de parole avant de basculer en capture.
+CONVERSING_VAD_FRAMES = int(os.getenv("CONVERSING_VAD_FRAMES", "3"))
 
 
 def _rms(frame: np.ndarray) -> float:
@@ -399,17 +405,26 @@ class Orchestrator:
         silent_rearm : ré-armement INVISIBLE après un tour vide sans parole (budget
         WAKE_PATIENCE_S) — on NE rejoue PAS le bip d'accusé du wake (l'utilisateur hésitait,
         il ne doit percevoir aucune coupure). Un nouveau statut ("RETRY", from_conversing) est
-        renvoyé sur ce cas (tour vide SANS parole) pour piloter le budget côté run()."""
+        renvoyé sur ce cas (tour vide SANS parole) pour piloter le budget côté run().
+
+        from_conversing : follow-up cyan→vert (P10.1). PAS de bip : l'utilisateur est DÉJÀ
+        en pleine phrase (déclenché au VAD, ~250 ms dans son propos) — un bip par-dessus lui
+        apprend le mauvais modèle mental (terrain : il répète toute sa phrase). Le VERT (LED
+        LISTENING posée dans _conversing) suffit comme feedback. Bip conservé sur le wake."""
         self._spoke = False                      # dette #9 : repart propre (garde MAX_WASTED)
         preroll, self._preroll = self._preroll, None   # début de commande à rejouer (follow-up)
-        if not silent_rearm:
+        if not silent_rearm and not from_conversing:
             play_beep()                          # FEEDBACK IMMÉDIAT au réveil (avant la connexion)
         url = stream_client.ws_url_from_http(config.CLOUD_BACKEND_URL)
         if from_conversing:
             url += "?from_conversing=1"
         client = stream_client.StreamClient(url, config.DEVICE_TOKEN)
         if not client.connect():
-            return None                          # WS KO → fallback ancien flux
+            # WS KO → fallback ancien flux. Mode DÉGRADÉ assumé : le pré-roll follow-up
+            # est perdu (le legacy re-capte à froid) et _record_command joue SON bip —
+            # signal légitime que quelque chose ne va pas. Ne PAS remettre self._preroll :
+            # il serait rejoué PÉRIMÉ à la prochaine session streaming.
+            return None
         logger.info("[stream] LISTENING (Flux turn-taking) — parlez…")
         self._set_state("LISTENING")
         self.ambient.set_enabled(False)
@@ -810,13 +825,17 @@ class Orchestrator:
         if getattr(self, "mic", None):
             self.mic.flush()   # audio frais (pas le backlog du THINKING)
         deadline = time.time() + config.CONVERSATION_WINDOW_S
-        # Follow-up sans wake word UNIQUEMENT si la VOIX de l'utilisateur est
-        # détectée (locuteur cible). Sinon → seul « Dis Aura » ré-engage.
-        gated = self.target.has_reference
-        win = np.zeros(0, dtype=np.int16)
-        win_max = int(1.0 * config.SAMPLE_RATE)
-        hop = 0.0
-        streak = 0
+        # P10.1 : le follow-up est DÉCLENCHÉ À LA PAROLE (Silero VAD), PLUS sur l'identité
+        # du locuteur EN AMONT (ancien _user_in_window ECAPA : 2 hops sur une fenêtre 1s →
+        # 1.5-3s de latence, instable en bruit). Dès qu'on entend parler → VERT IMMÉDIAT
+        # (« ça enregistre »), et la VÉRIF LOCUTEUR se fait À LA FIN, comme tout autre tour :
+        #   (a) vérif ECAPA au turn_end (15 dernières s, cf. _handle_command_streaming) ;
+        #   (b) intent gate backend (?from_conversing=1 → not_directed si la parole ne
+        #       s'adresse pas à Aura, cf. device_stream.py).
+        # Plus de garde `gated = self.target.has_reference` : le follow-up marche pour TOUT
+        # LE MONDE (enrôlé ou non — fail-open partout, comme le chemin wake).
+        self.vad.reset()                          # état Silero propre pour la fenêtre
+        voiced = 0                                # frames voisées consécutives
         recent = np.zeros(0, dtype=np.int16)
         recent_max = int(1.5 * config.SAMPLE_RATE)
         for frame in frames:
@@ -832,20 +851,21 @@ class Orchestrator:
                 return "IDLE", False             # « Stop Aura » = ARRÊTER (pas écouter)
             if ev == "activate" and self._wake_is_owner(recent):
                 return "LISTENING", False        # « Dis Aura » par TOI → écoute
-            if gated:
-                win = np.concatenate([win, frame])[-win_max:]
-                hop += FRAME_S
-                if hop >= config.TARGET_HOP_S:
-                    hop = 0.0
-                    if self._user_in_window(win):
-                        streak += 1
-                        if streak >= 2:
-                            # PRE-ROLL : le début du follow-up a été consommé pendant la
-                            # détection → on le garde pour le rejouer au stream (sinon coupé).
-                            self._preroll = recent.copy()
-                            return "LISTENING", True   # follow-up : ta voix détectée
-                    else:
-                        streak = 0
+            # PAROLE ? (Silero VAD, même API/stateful que _record_command) — on compte les
+            # frames voisées CONSÉCUTIVES (1 frame = 80 ms → CONVERSING_VAD_FRAMES×80 ms).
+            # NB : volontairement PAS gaté par ENDPOINT_VAD (ce flag ne coupe que
+            # l'endpointing) — is_speech() se dégrade seul en RMS si Silero est absent.
+            if self.vad.is_speech(frame):
+                voiced += 1
+                if voiced >= CONVERSING_VAD_FRAMES:
+                    # PRE-ROLL : le début du follow-up a été consommé pendant la détection
+                    # → on GARDE ce buffer 1.5s (large pour ~250 ms de latence VAD) pour le
+                    # rejouer au stream (sinon début de phrase coupé).
+                    self._preroll = recent.copy()
+                    self._set_state("LISTENING")       # VERT IMMÉDIAT (« ça enregistre »)
+                    return "LISTENING", True           # follow-up : parole détectée
+            else:
+                voiced = 0
         return "IDLE", False
 
     # ── Boucle principale ────────────────────────────────────────────
