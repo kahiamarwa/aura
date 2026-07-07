@@ -109,10 +109,16 @@ ACTIVATE_MODEL = os.getenv("ACTIVATE_MODEL", "Aura_test.onnx")  # "Dis Aura"
 INTERRUPT_MODEL = os.getenv("INTERRUPT_MODEL", "stop_aura.onnx")  # "Stop Aura"
 WAKE_THRESHOLDS = {
     # 0.35 (était 0.4) : télémétrie wake_events du 06-07/07 — 7 tentatives réelles
-    # ratées à 0.25-0.40 (score moy 0.33, RMS 0.089 = signal fort). Les faux positifs
-    # résiduels sont filtrés par le gate locuteur (_wake_is_owner).
+    # ratées à 0.25-0.40 (score moy 0.33, RMS 0.089 = signal fort). ATTENTION : au 1er
+    # tour la SEULE défense est ce seuil + la VÉRIF LOCUTEUR au turn_end (ECAPA local sur
+    # le Pi). Le gate _wake_is_owner est OFF par défaut (WAKE_SPEAKER_GATE=0 → il retourne
+    # True inconditionnellement, il ne filtre RIEN) : ne PAS justifier ce seuil bas par lui
+    # (défense fantôme). Ré-évaluer 0.35 si on désactive la vérif turn_end.
     Path(ACTIVATE_MODEL).stem: float(os.getenv("ACTIVATE_THRESHOLD", "0.35")),
-    # stop_aura plus strict : il faux-déclenche sur la parole ambiante
+    # 0.85 : n'est EFFECTIF qu'en IDLE, où le résultat « interrupt » est de toute façon
+    # ignoré (rien à stopper). Tous les états actifs le SUPPLANTENT par un override
+    # contextuel : capture/CONVERSING → STOP_CAPTURE_THRESHOLD (0.5), lecture →
+    # STOP_SPEAKING_THRESHOLD (0.70). Régler CE knob ne change donc rien au terrain.
     Path(INTERRUPT_MODEL).stem: float(os.getenv("INTERRUPT_THRESHOLD", "0.85")),
 }
 # Seuil « Stop Aura » PENDANT LA LECTURE : 0.70 (était le 0.85 global) — télémétrie :
@@ -138,22 +144,21 @@ VAD_PROB_THRESHOLD = float(os.getenv("VAD_PROB_THRESHOLD", "0.5"))   # proba par
 ENDPOINT_VAD = os.getenv("ENDPOINT_VAD", "1") == "1"
 
 # ── Smart Turn v3 — détection de fin de tour (chemin B, façon Alexa) ──
-# Modèle audio local (BSD-2) qui décide « l'utilisateur a fini ? » aux pauses VAD.
-# OFF par défaut (chantier en cours). pip install onnxruntime huggingface_hub.
+# [LEGACY/NON-STREAMING] Modèle JAMAIS appelé dans le chemin streaming actuel : la fin de
+# tour = Deepgram Flux (backend). Ces 3 knobs ne pilotent QUE smart_turn.py (outillage/bench
+# hors runtime, gardé). OFF par défaut. pip install onnxruntime huggingface_hub.
 SMART_TURN_ENABLED = os.getenv("SMART_TURN_ENABLED", "0") == "1"
 SMART_TURN_MODEL = os.getenv("SMART_TURN_MODEL", "")          # vide → download HF (variante CPU int8)
 SMART_TURN_THRESHOLD = float(os.getenv("SMART_TURN_THRESHOLD", "0.5"))   # proba > seuil = fini
 
-# ── Mode STREAMING (chemin B complet : WS + Scribe + Smart Turn) ──────
+# ── Mode STREAMING (chemin B : WS backend + Deepgram Flux = STT + fin de tour) ──
 # 1 = nouveau flux temps réel (remplace capture-WAV-puis-envoi). Nécessite le
 # backend déployé (route /api/device-stream) + pip install websocket-client.
 # OFF par défaut → l'ancien flux (cloud.converse) reste le fallback.
 STREAMING_MODE = os.getenv("STREAMING_MODE", "0") == "1"
-STREAM_PAUSE_S = float(os.getenv("STREAM_PAUSE_S", "0.4"))   # silence avant de tester Smart Turn
-# Endpointing au SILENCE en mode streaming (quand Smart Turn est OFF) : durée de
-# silence tolérée avant de clore le tour. Généreux (1,5s) → tu peux hésiter sans
-# être coupé. C'est l'approche FIABLE (Smart Turn v3 est trop pressé en français).
-STREAM_SILENCE_S = float(os.getenv("STREAM_SILENCE_S", "1.5"))
+# [LEGACY/NON-STREAMING] STREAM_PAUSE_S / STREAM_SILENCE_S SUPPRIMÉS (0 lecteur, pièges de
+# tuning) : en streaming l'endpointing/fin de tour = Deepgram Flux → régler FLUX_EOT_THRESHOLD
+# et FLUX_EOT_TIMEOUT_MS CÔTÉ BACKEND (backend/app/config.py), rien à régler ici.
 # Garde-fou lecture : si le backend n'envoie RIEN pendant ce délai (réponse/audio),
 # on abandonne la lecture au lieu de rester bloqué sur SPEAKING. Couvre LLM + TTS lents.
 STREAM_RESPONSE_TIMEOUT_S = float(os.getenv("STREAM_RESPONSE_TIMEOUT_S", "60"))
@@ -161,14 +166,21 @@ STREAM_RESPONSE_TIMEOUT_S = float(os.getenv("STREAM_RESPONSE_TIMEOUT_S", "60"))
 # cassée, on coupe au lieu de rester bloqué pour toujours. Large (5 min) pour ne pas
 # couper une réponse longue légitime ; c'est juste un backstop anti-blocage.
 SPEAK_MAX_S = float(os.getenv("SPEAK_MAX_S", "300"))
-VAD_SPEECH_FRAMES = 2          # frames consécutives pour démarrer (~hystérésis)
-VAD_SILENCE_FRAMES = 20        # frames de silence pour clore (~0.6s à 32ms/frame)
+# [LEGACY/NON-STREAMING] VAD_SPEECH_FRAMES / VAD_SILENCE_FRAMES SUPPRIMÉS (0 lecteur) :
+# l'hystérésis de parole est gérée par Silero (VAD_PROB_THRESHOLD) + TARGET_HANG_S.
 
 # ── Capture de la commande ───────────────────────────────────────────
 CMD_SILENCE_RMS = float(os.getenv("CMD_SILENCE_RMS", "300"))   # seuil énergie de SECOURS (si Silero VAD indispo)
-CMD_SILENCE_HANG_S = 1.0      # silence consécutif pour clore la commande
+# [LEGACY/NON-STREAMING] CMD_SILENCE_HANG_S SUPPRIMÉ (0 lecteur, piège de tuning) : le hang
+# réel de clôture de commande est TARGET_HANG_S (endpointing par locuteur cible, plus bas).
 CMD_MAX_S = float(os.getenv("CMD_MAX_S", "20"))   # cap de sécurité (ANCIEN chemin non-streaming uniquement)
 CMD_MIN_SPEECH_S = 0.3        # parole min pour considérer une vraie commande
+# Budget de patience après le wake : re-armement invisible sur tour vide sans parole.
+# L'utilisateur hésite quelques secondes après « Dis Aura » → Flux clôt le tour sur le
+# silence (transcript vide, aucun partial) → sans budget on couperait et re-cyclerait
+# (« ça coupe et ça revient »). Tant qu'on est dans ce budget, ce tour vide NE coupe PAS :
+# on ré-écoute SANS bip ni changement de LED (aucune coupure perçue). Au-delà → « rien entendu ».
+WAKE_PATIENCE_S = float(os.getenv("WAKE_PATIENCE_S", "20"))
 # Chemin STREAMING (Flux) : capture ILLIMITÉE — clôture par « Stop Aura » ou Flux.
 # Filet anti-blocage très long qui SOUMET la commande (jamais jeter). 0 = désactivé.
 CMD_HARD_CAP_S = float(os.getenv("CMD_HARD_CAP_S", "300"))
@@ -196,12 +208,14 @@ TARGET_ENDPOINTING = os.getenv("TARGET_ENDPOINTING", "0") == "1"
 TARGET_WINDOW_S = 1.5          # fenêtre glissante pour décider "c'est lui ?"
 TARGET_HOP_S = 0.4            # cadence de décision (toutes les 0.4 s)
 TARGET_HANG_S = float(os.getenv("TARGET_HANG_S", "2.0"))   # absence de TA voix pour clore (tolère les pauses de réflexion)
-TARGET_MISS_HYSTERESIS = 2    # fenêtres "pas lui" consécutives avant de compter l'absence
+# [LEGACY/NON-STREAMING] TARGET_MISS_HYSTERESIS SUPPRIMÉ (0 lecteur).
 TARGET_WAIT_START_S = 4.0     # si TA voix n'apparaît jamais après le wake word → abandon
-# Une fois la commande DÉMARRÉE, on garde tant qu'il y a de la PAROLE, et on finit
-# sur le SILENCE — on ne coupe PAS sur le score locuteur (qui fluctue, surtout pour
-# une 2e voix enrôlée plus faible → coupait au milieu, "trop restrictif"). Défaut
-# -1.0 = ne jamais couper sur le score. Mets-le à 0.0+ pour filtrer les autres voix.
+# [LEGACY/NON-STREAMING] Lu UNIQUEMENT par _record_command (ancien flux). Une fois la
+# commande DÉMARRÉE, on garde tant qu'il y a de la PAROLE, et on finit sur le SILENCE — on
+# ne coupe PAS sur le score locuteur (qui fluctue, surtout pour une 2e voix enrôlée plus
+# faible → coupait au milieu, "trop restrictif"). PIÈGE : défaut -1.0 → le test
+# "score >= KEEP" est TOUJOURS vrai → aucun filtrage locuteur (inférence ECAPA toutes les
+# 0.4s pour rien si TARGET_ENDPOINTING=1). Mets-le à 0.0+ pour vraiment filtrer les autres voix.
 TARGET_KEEP_THRESHOLD = float(os.getenv("TARGET_KEEP_THRESHOLD", "-1.0"))
 
 # ── Endpointing SÉMANTIQUE (tolère les pauses de réflexion) ──────────
@@ -220,9 +234,9 @@ MAX_CONV_TURNS = int(os.getenv("MAX_CONV_TURNS", "8"))  # tours max en conversat
 
 # ── Conversation continue (parité web) ───────────────────────────────
 CONVERSATION_WINDOW_S = float(os.getenv("CONVERSATION_WINDOW_S", "8.0"))   # fenêtre suivi sans wake word
-CONVERSING_RMS = float(os.getenv("CONVERSING_RMS", "350"))   # seuil parole en conversing
-SPEAKING_RMS = float(os.getenv("SPEAKING_RMS", "600"))       # seuil barge-in pendant TTS (> écho)
-FOLLOWUP_SPEECH_FRAMES = 3     # frames consécutives pour déclencher un follow-up/barge-in
+# [LEGACY/NON-STREAMING] CONVERSING_RMS / SPEAKING_RMS / FOLLOWUP_SPEECH_FRAMES SUPPRIMÉS
+# (0 lecteur) : le gate parole du follow-up/barge-in utilise CMD_SILENCE_RMS×0.5 + le
+# locuteur cible (_user_in_window), pas ces seuils.
 # Barge-in pendant que Aura PARLE : nb de hops (×0.4s) de TA voix avant de basculer
 # en écoute. Volontairement HAUT (1.6s) pour laisser « Stop Aura » (~1-1.2s) GAGNER
 # la course — sinon dire « Stop Aura » est pris pour un barge-in et lance l'écoute.

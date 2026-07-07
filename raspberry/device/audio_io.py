@@ -194,8 +194,32 @@ class MicStream:
             yield frame
 
 
-_BEEP_WAV = "/tmp/aura_beep.wav"
-_beep_ready = False
+# Cache des WAV de bips PAR séquence de tons : l'ancien cache unique rejouait
+# le TOUT PREMIER bip généré quels que soient freq/dur → les bips différenciés
+# (erreur 300 Hz, rejet, « rien entendu » 500→350) sonnaient tous pareil.
+_beeps_ready: set = set()
+
+
+def _beep_wav(seq, gain: float) -> str:
+    """Synthétise (et met en cache) le WAV d'une séquence de (freq, dur)."""
+    key = "_".join(f"{int(f)}-{int(d * 1000)}" for f, d in seq) + f"-{int(gain * 100)}"
+    path = f"/tmp/aura_beep_{key}.wav"
+    if path not in _beeps_ready:
+        import wave as _wave
+        sr = 16000
+        parts = []
+        for freq, dur in seq:
+            n = int(sr * dur)
+            t = np.linspace(0, dur, n, endpoint=False)
+            env = np.minimum(1.0, np.minimum(t, dur - t) * 40)  # fade in/out
+            parts.append((np.sin(2 * np.pi * freq * t) * env * gain * 32767).astype(np.int16))
+        with _wave.open(path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(np.concatenate(parts).tobytes())
+        _beeps_ready.add(path)
+    return path
 
 
 def play_beep(freq: float = 880.0, dur: float = 0.18, gain: float = 0.3):
@@ -204,24 +228,19 @@ def play_beep(freq: float = 880.0, dur: float = 0.18, gain: float = 0.3):
     On évite sounddevice (souvent pas de sortie sur les micros USB) : on passe
     par aplay/ALSA, le même chemin que mpg123 pour le TTS. Désactivable AURA_BEEP=0.
     """
+    play_beep_seq(((freq, dur),), gain=gain)
+
+
+def play_beep_seq(seq, gain: float = 0.3):
+    """Séquence de bips ((freq, dur), …) en UN SEUL WAV / UN SEUL aplay.
+
+    Deux play_beep() successifs = deux aplay quasi simultanés : sur un device
+    hardware sans dmix (plughw), le second se prend « device busy » et est avalé.
+    Le composite garantit l'enchaînement (ex. double bip descendant 500→350)."""
     if os.getenv("AURA_BEEP", "1") != "1":
         return
-    global _beep_ready
     try:
-        if not _beep_ready:
-            import wave as _wave
-            sr = 16000
-            n = int(sr * dur)
-            t = np.linspace(0, dur, n, endpoint=False)
-            env = np.minimum(1.0, np.minimum(t, dur - t) * 40)  # fade in/out
-            tone = (np.sin(2 * np.pi * freq * t) * env * gain * 32767).astype(np.int16)
-            with _wave.open(_BEEP_WAV, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(sr)
-                wf.writeframes(tone.tobytes())
-            _beep_ready = True
-        subprocess.Popen(_aplay_cmd(_BEEP_WAV),
+        subprocess.Popen(_aplay_cmd(_beep_wav(tuple(seq), gain)),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass

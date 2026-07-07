@@ -26,7 +26,7 @@ from . import config
 from .wakeword import WakeWord
 from .vad import VAD
 from .speaker import TargetSpeaker
-from .audio_io import MicStream, Player, play_beep
+from .audio_io import MicStream, Player, play_beep, play_beep_seq
 from .context import AmbientContext
 from .led_controller import LedController
 from .smart_turn import SmartTurn
@@ -304,6 +304,19 @@ class Orchestrator:
     def _handle_command(self, pcm: np.ndarray, from_conversing: bool, frames) -> tuple[str, bool]:
         self._spoke = False
         self.last_transcript = ""            # pas encore transcrit → ne pas montrer l'ancien
+        # ── Gate LOCUTEUR sur le chemin LEGACY (P9-C) : parité avec le turn_end streaming ──
+        # Avant, le fallback HTTP (WS KO / STREAMING_MODE off) CONTOURNAIT le gate locuteur
+        # (verify backend legacy non bloquante à 0.25) → un tiers NON enrôlé obtenait une
+        # réponse complète. On vérifie EN LOCAL sur les 15 dernières s (même fenêtre bornée
+        # que le streaming). verify() est fail-open (accepted=True) si pas d'empreinte / audio
+        # trop court / erreur → jamais de blocage accidentel du vrai utilisateur.
+        if self.target.has_reference:
+            name, score, accepted = self.target.verify(pcm[-int(15 * config.SAMPLE_RATE):])
+            if not accepted:
+                logger.info("[gate] locuteur non reconnu EN LOCAL (%s, %.2f) → rejet (CONVERSING)",
+                            name, score)
+                play_beep(freq=300.0, dur=0.12)   # même tonalité « voix non reconnue » que le streaming
+                return "CONVERSING", False
         self._set_state("THINKING")          # P2 : l'orbe passe au bleu PENDANT le cloud
         sr = config.SAMPLE_RATE
         full = pcm
@@ -367,15 +380,30 @@ class Orchestrator:
             return "LISTENING", True     # ta voix par-dessus = tu enchaînes
         return "CONVERSING", False       # fin normale → fenêtre de conversation
 
+    def _error_beep(self):
+        """Bip d'ÉCHEC (grave, distinct du bip aigu « je t'écoute ») : toute fin de tour
+        ANORMALE (backend mort en capture, grâce force_eot expirée, panne TTS ElevenLabs,
+        mpg123 mort) DOIT s'entendre — fini le silence LED orange (P9-A). Appelé UNIQUEMENT
+        depuis le thread principal (jamais depuis le thread feed) — play_beep = Popen aplay
+        fire-and-forget, même chemin sonore que le TTS."""
+        play_beep(freq=300.0, dur=0.25)
+
     # ── Chemin B : flux STREAMING (Deepgram Flux décide la fin de tour) ──
-    def _handle_command_streaming(self, frames, from_conversing: bool = False):
+    def _handle_command_streaming(self, frames, from_conversing: bool = False,
+                                  silent_rearm: bool = False):
         """Stream le PCM au backend → Deepgram Flux décide la fin de tour ('turn_end'),
         puis joue la réponse streamée. Retourne (next_state, from_conversing), ou None si
         le WS échoue OU si le backend renvoie une erreur AVANT tout progrès (→ l'appelant
-        retombe sur l'ancien flux fiable). from_conversing → gating intent côté backend (I5)."""
+        retombe sur l'ancien flux fiable). from_conversing → gating intent côté backend (I5).
+
+        silent_rearm : ré-armement INVISIBLE après un tour vide sans parole (budget
+        WAKE_PATIENCE_S) — on NE rejoue PAS le bip d'accusé du wake (l'utilisateur hésitait,
+        il ne doit percevoir aucune coupure). Un nouveau statut ("RETRY", from_conversing) est
+        renvoyé sur ce cas (tour vide SANS parole) pour piloter le budget côté run()."""
         self._spoke = False                      # dette #9 : repart propre (garde MAX_WASTED)
         preroll, self._preroll = self._preroll, None   # début de commande à rejouer (follow-up)
-        play_beep()                              # FEEDBACK IMMÉDIAT au réveil (avant la connexion)
+        if not silent_rearm:
+            play_beep()                          # FEEDBACK IMMÉDIAT au réveil (avant la connexion)
         url = stream_client.ws_url_from_http(config.CLOUD_BACKEND_URL)
         if from_conversing:
             url += "?from_conversing=1"
@@ -403,9 +431,17 @@ class Orchestrator:
         grace_deadline = None                    # armée après force_eot : borne l'attente du turn_end
         progressed = False                               # I1 : reçu partial/turn_end ?
         transcript = ""
+        heard_speech = False                     # P9-E : un partial NON VIDE = parole entendue
         turn_ended = False
         eot_forced = False                       # « Stop Aura » = fin de commande (1×/tour)
         while not turn_ended:
+            # Mute distant (mode confidentiel) : STOPPE la capture — plus RIEN ne part
+            # au cloud (avant, la capture continuait à streamer malgré le mute) (P9-C).
+            if self._muted.is_set():
+                logger.info("[mute] coupure de la capture (mode confidentiel)")
+                client.send_cancel()
+                client.close()
+                return "IDLE", False
             try:
                 frame = next(frames)
             except StopIteration:
@@ -427,7 +463,10 @@ class Orchestrator:
                 kind, data = m
                 if kind == "partial":
                     progressed = True
-                    self.last_transcript = data.get("text", "") or self.last_transcript
+                    txt = data.get("text", "") or ""
+                    if txt.strip():
+                        heard_speech = True      # P9-E : parole réellement transcrite (pas juste du bruit)
+                    self.last_transcript = txt or self.last_transcript
                 elif kind == "turn_end":
                     progressed = True
                     transcript = (data.get("transcript") or "").strip()
@@ -436,7 +475,12 @@ class Orchestrator:
                     # VÉRIF LOCUTEUR EN LOCAL (ECAPA sur le Pi, instantané, zéro steal) →
                     # on envoie le résultat au backend qui ne fait plus l'ECAPA lui-même.
                     if transcript and cmd_audio:
-                        name, score, accepted = self.target.verify(np.concatenate(cmd_audio))
+                        # Fenêtre ECAPA BORNÉE (P9-C) : la capture est illimitée → cmd_audio
+                        # peut atteindre 300s → embedding CPU Pi de plusieurs dizaines de s DANS
+                        # la boucle (micro gelé, LED figée) + dépassement de l'attente backend
+                        # (10s) → verdict droppé + fail-open. Les 15 dernières s suffisent à ECAPA.
+                        pcm = np.concatenate(cmd_audio)[-int(15 * config.SAMPLE_RATE):]
+                        name, score, accepted = self.target.verify(pcm)
                         client.send_speaker(accepted, name, score)
                         logger.info("[verify] LOCAL : %s score=%.2f accepted=%s", name, score, accepted)
                     turn_ended = True
@@ -446,15 +490,23 @@ class Orchestrator:
                     if not progressed:           # I1 : erreur AVANT tout transcript → repli fiable
                         logger.warning("[stream] erreur backend précoce (%s) → fallback ancien flux", kind)
                         return None
-                    return "CONVERSING", False    # tour réellement vide → on revient
+                    # backend/WS mort APRÈS des partials (l'utilisateur PARLAIT) = commande
+                    # perdue. Ne PAS retomber en CONVERSING muet : bip d'échec + IDLE (P9-A).
+                    self._error_beep()
+                    logger.warning("[stream] backend mort en capture (%s) après progrès → "
+                                   "commande perdue: %r", kind, self.last_transcript)
+                    return "IDLE", False
             now_mono = time.monotonic()
             if grace_deadline is not None and now_mono >= grace_deadline:
-                # force_eot envoyé mais AUCUN turn_end après la grâce → backend muet, on sort
-                logger.warning("[stream] pas de turn_end %.0fs après force EOT → abandon",
+                # force_eot envoyé mais AUCUN turn_end après la grâce → backend muet. Au lieu
+                # d'un IDLE MUET : bip d'échec + fenêtre de reprise (l'utilisateur reformule
+                # sans re-wake). from_conversing préservé pour le gating intent (P9-A).
+                logger.warning("[stream] pas de turn_end %.0fs après force EOT → reprise (CONVERSING)",
                                config.CMD_FORCE_GRACE_S)
                 client.send_cancel()
                 client.close()
-                return "IDLE", False
+                self._error_beep()
+                return "CONVERSING", from_conversing
             if hard_cap is not None and not eot_forced and now_mono >= hard_cap:
                 # filet anti-blocage (très long) : on SOUMET la commande, on ne la jette pas
                 logger.info("[stream] filet %.0fs → soumission forcée de la commande",
@@ -464,9 +516,18 @@ class Orchestrator:
                 grace_deadline = time.monotonic() + config.CMD_FORCE_GRACE_S
         # turn_end à transcript VIDE → inutile de lancer mpg123 (dette #1/#12)
         if not transcript:
-            logger.info("[stream] tour vide → CONVERSING (pas de lecture)")
             client.send_cancel()
             client.close()
+            if not heard_speech:
+                # Tour vide SANS parole = HÉSITATION (rien dit après le wake / Flux clôt sur
+                # le silence). RETRY → ré-armement invisible dans run() tant qu'on est dans le
+                # budget WAKE_PATIENCE_S (l'utilisateur ne doit percevoir aucune coupure).
+                logger.info("[stream] tour vide SANS parole → RETRY (budget d'hésitation)")
+                return "RETRY", from_conversing
+            # Tour vide APRÈS parole entendue (Flux a transcrit puis le nettoyage a vidé) :
+            # double bip descendant doux « rien compris » — distinct du silence — puis reprise.
+            logger.info("[stream] tour vide APRÈS parole → CONVERSING (« rien compris »)")
+            play_beep_seq(((500.0, 0.1), (350.0, 0.1)))
             return "CONVERSING", False
         # fin de tour → THINKING → on joue la réponse streamée
         self._set_state("THINKING")
@@ -477,6 +538,10 @@ class Orchestrator:
         if barge == "rejected":
             play_beep(freq=300.0, dur=0.12)   # tonalité basse = « voix non reconnue »
             return "IDLE", False
+        if barge == "not_directed":
+            return "IDLE", False              # bruit ambiant (pas pour Aura) → silence VOULU (P9-A)
+        if barge == "failed":
+            return "IDLE", False              # échec (bip d'erreur déjà joué dans _play_streamed_response)
         return "CONVERSING", False
 
     def _play_streamed_response(self, client, frames) -> str | None:
@@ -493,7 +558,14 @@ class Orchestrator:
             self.mic.flush()         # audio FRAIS → « Stop Aura » jugé en temps réel
         stop = threading.Event()
         done = threading.Event()
-        flags = {"rejected": False}
+        # flags remplis par le thread feed, LUS après le join (P9-A) : status = payload du
+        # 'final' (not_directed/empty/…) ; failed = error/closed OU timeout muet avant tout
+        # audio OU mpg123 mort ; tts_dead = panne ElevenLabs signalée par le backend.
+        # last_activity (P9-B) : horodatage du DERNIER message backend (audio, response,
+        # keepalive 'thinking'… tout compte) — initialisé AVANT le start du thread pour que
+        # la garde d'inactivité soit armée dès t0 sans jamais tirer à vide au connect.
+        flags = {"rejected": False, "status": None, "failed": False, "tts_dead": False,
+                 "last_activity": time.monotonic()}
 
         def feed():
             started = False
@@ -505,9 +577,12 @@ class Orchestrator:
                         if time.monotonic() - last_msg > config.STREAM_RESPONSE_TIMEOUT_S:
                             logger.warning("[stream] pas de réponse backend (%.0fs) → abandon",
                                            config.STREAM_RESPONSE_TIMEOUT_S)
+                            if not self._spoke:          # backend muet AVANT tout audio = échec (P9-A)
+                                flags["failed"] = True
                             break
                         continue
                     last_msg = time.monotonic()
+                    flags["last_activity"] = last_msg   # TOUT message = activité backend (P9-B)
                     kind, data = m
                     if kind == "response":
                         self.last_transcript = data.get("transcript", "") or self.last_transcript
@@ -518,12 +593,28 @@ class Orchestrator:
                         if not started:
                             self.player.start_stream()   # mpg123 démarré au 1er son (dette #1/#12)
                             started = True
+                            if not self.player.is_playing:   # mpg123 absent/mort (parité legacy :601)
+                                logger.error("[stream] lecture impossible (mpg123 ?) — réponse non jouée")
+                                flags["failed"] = True
+                                break
                         self.player.feed(data)           # peut bloquer (backpressure) — OK, thread dédié
                     elif kind == "rejected":
                         logger.info("[stream] locuteur non autorisé — aucune réponse")
                         flags["rejected"] = True
                         break
-                    elif kind in ("audio_end", "final", "error", "closed"):
+                    elif kind == "audio_end":
+                        break                            # fin NORMALE (audio joué jusqu'au bout)
+                    elif kind == "final":
+                        flags["status"] = data.get("status")   # not_directed / empty / …
+                        break
+                    elif kind == "error":
+                        if data.get("error") == "tts":   # panne ElevenLabs signalée par le backend
+                            flags["tts_dead"] = True
+                        else:
+                            flags["failed"] = True
+                        break
+                    elif kind == "closed":
+                        flags["failed"] = True
                         break
             except Exception:
                 pass
@@ -535,20 +626,32 @@ class Orchestrator:
         t = threading.Thread(target=feed, daemon=True)
         t.start()
         # Boucle principale : micro EN CONTINU → « Stop Aura » coupe immédiatement.
-        spoke_at = None
         ring = np.zeros(0, dtype=np.int16)              # fenêtre voix pour le stop-guard
         ring_max = int(1.5 * config.SAMPLE_RATE)
         last_guard_reject = -1e9                        # règle d'insistance (2e stop < 8s)
         while not done.is_set():
-            # Garde-fou : si mpg123 fige sur une sortie audio cassée, ne JAMAIS rester
-            # bloqué sur SPEAKING — on coupe au bout de SPEAK_MAX_S.
-            if self._spoke and spoke_at is None:
-                spoke_at = time.monotonic()
-            if spoke_at is not None and time.monotonic() - spoke_at > config.SPEAK_MAX_S:
-                logger.warning("[stream] lecture trop longue (%.0fs) → abandon (sortie audio ?)",
-                               config.SPEAK_MAX_S)
+            # Mute distant (mode confidentiel) : coupure IMMÉDIATE de la lecture (P9-C).
+            # Retour None via le join normal → run() bascule en MUTED au cycle suivant.
+            if self._muted.is_set():
+                logger.info("[mute] coupure de la lecture (mode confidentiel)")
                 stop.set()
                 self.player.stop()
+                client.send_cancel()
+                break
+            # Garde d'INACTIVITÉ (P9-B) : SPEAK_MAX_S sans AUCUN message backend (ni audio,
+            # ni response, ni keepalive 'thinking') = vraie panne (backend/sortie audio).
+            # Un tour long ACTIF (génération PPTX…) rafraîchit last_activity en continu →
+            # plus JAMAIS un tour légitime coupé par un cap absolu armé sur la 1re phrase.
+            if flags.get("last_activity") and \
+                    time.monotonic() - flags["last_activity"] > config.SPEAK_MAX_S:
+                logger.warning("[stream] aucune activité backend depuis %.0fs → abandon (cancel + bip)",
+                               config.SPEAK_MAX_S)
+                client.send_cancel()
+                stop.set()
+                # stop() AVANT le bip : un mpg123 gelé tient plughw:2 (pas de dmix) —
+                # aplay se prendrait « device busy » et le bip serait avalé.
+                self.player.stop()
+                self._error_beep()               # l'échec DOIT s'entendre (thread principal)
                 break
             try:
                 frame = next(frames)
@@ -571,7 +674,14 @@ class Orchestrator:
                 t.join(timeout=1.0)
                 return "stop"
         t.join(timeout=2.0)
-        return "rejected" if flags["rejected"] else None
+        if flags["rejected"]:
+            return "rejected"
+        if flags["status"] == "not_directed":
+            return "not_directed"             # pas pour Aura → IDLE silencieux (mappé côté appelant)
+        if flags["failed"] or flags["tts_dead"]:
+            self._error_beep()                # échec DOIT s'entendre (thread principal, jamais feed)
+            return "failed"
+        return None
 
     # ── Teardown déterministe du SPEAKING (aucune fuite socket/zombie) ──
     def _teardown_speak(self, t, stop, res):
@@ -635,7 +745,20 @@ class Orchestrator:
         ring = np.zeros(0, dtype=np.int16)              # fenêtre voix pour le stop-guard
         ring_max = int(1.5 * config.SAMPLE_RATE)
         last_guard_reject = -1e9                        # règle d'insistance (2e stop < 8s)
+        # Garde-fou legacy (P9-B) : SPEAK_MAX promettait un anti-blocage qui n'existait PAS
+        # sur ce chemin (mpg123 figé = SPEAKING infini). Cap absolu suffisant ici : la
+        # réponse legacy est déjà entièrement générée (pas de tour long côté backend).
+        deadline = time.monotonic() + config.SPEAK_MAX_S
         while self.player.is_playing or t.is_alive():
+            if self._muted.is_set():                     # mute distant → coupure (P9-C)
+                logger.info("[mute] coupure de la lecture (mode confidentiel)")
+                self._teardown_speak(t, stop, res)
+                return None
+            if time.monotonic() > deadline:
+                logger.warning("[speak] lecture > %.0fs (SPEAK_MAX_S) → abandon (sortie audio ?)",
+                               config.SPEAK_MAX_S)
+                self._teardown_speak(t, stop, res)
+                return None
             try:
                 frame = next(frames)
             except StopIteration:
@@ -687,6 +810,8 @@ class Orchestrator:
         recent = np.zeros(0, dtype=np.int16)
         recent_max = int(1.5 * config.SAMPLE_RATE)
         for frame in frames:
+            if self._muted.is_set():                 # mute distant → sortie immédiate (P9-C)
+                return "IDLE", False
             if time.time() >= deadline:
                 return "IDLE", False
             recent = np.concatenate([recent, frame])[-recent_max:]
@@ -749,6 +874,8 @@ class Orchestrator:
             from_conversing = False
             wasted = 0          # cycles consécutifs sans réponse → IDLE
             conv_turns = 0      # plafond de tours en CONVERSING (anti-boucle)
+            listen_started = 0.0    # début de la session d'écoute courante (budget d'hésitation)
+            rearm_silent = False    # la prochaine entrée LISTENING est un ré-armement invisible
             recent = np.zeros(0, dtype=np.int16)        # ~1.5s pour le speaker-gate
             recent_max = int(1.5 * config.SAMPLE_RATE)
             while True:
@@ -759,7 +886,8 @@ class Orchestrator:
                         self.player.stop()
                         self.ambient.set_enabled(False)
                         from_conversing = False
-                        self._set_state("MUTED")
+                        rearm_silent = False   # un mute pendant la fenêtre de ré-armement ne doit
+                        self._set_state("MUTED")   # pas voler le bip ACK du prochain vrai wake
                     if getattr(self, "mic", None):
                         self.mic.flush()             # jette l'audio capté (aucun traitement)
                     time.sleep(0.2)
@@ -778,6 +906,7 @@ class Orchestrator:
                     except Exception as e:
                         logger.warning("[enroll] erreur: %s", e)
                     from_conversing = False
+                    rearm_silent = False   # même raison que le mute : pas de ré-armement hérité
                     self._set_state("IDLE")
                     continue
 
@@ -800,11 +929,34 @@ class Orchestrator:
                         self._set_state("LISTENING")
 
                 elif self.state == "LISTENING":
+                    # Départ du budget d'hésitation (WAKE_PATIENCE_S) : posé à la 1re entrée
+                    # d'une session d'écoute ; PRÉSERVÉ sur un ré-armement invisible (le budget
+                    # court à partir du wake, pas à chaque re-tentative).
+                    if not rearm_silent:
+                        listen_started = time.monotonic()
                     recent = np.zeros(0, dtype=np.int16)   # le wake-gate a fait son office → purge (#11)
                     # Chemin B : flux streaming (Deepgram Flux décide la fin de tour).
                     streamed = None
                     if config.STREAMING_MODE:
-                        streamed = self._handle_command_streaming(frames, from_conversing)
+                        streamed = self._handle_command_streaming(
+                            frames, from_conversing, silent_rearm=rearm_silent)
+                    rearm_silent = False
+                    # RETRY = tour vide SANS parole (hésitation). Ne DOIT jamais fuiter vers
+                    # _set_state (état invalide) ni vers wasted : on le traite ICI, avant tout.
+                    if streamed is not None and streamed[0] == "RETRY":
+                        from_conversing = streamed[1]
+                        if time.monotonic() - listen_started < config.WAKE_PATIENCE_S:
+                            # Dans le budget → ré-armement INVISIBLE : on reste en LISTENING,
+                            # on re-capture SANS bip ni changement de LED (aucune coupure perçue).
+                            rearm_silent = True
+                            continue
+                        # Budget épuisé → double bip descendant doux « rien entendu » + IDLE.
+                        logger.info("[wake] budget d'hésitation épuisé (%.0fs) → « rien entendu » + IDLE",
+                                    config.WAKE_PATIENCE_S)
+                        play_beep_seq(((500.0, 0.1), (350.0, 0.1)))
+                        from_conversing = False
+                        self._set_state("IDLE")
+                        continue
                     if streamed is not None:
                         next_state, from_conversing = streamed
                         wasted = 0 if getattr(self, "_spoke", False) else wasted + 1

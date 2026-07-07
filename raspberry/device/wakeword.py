@@ -47,19 +47,26 @@ class WakeWord:
         self._log_min = float(os.getenv("WAKE_LOG_MIN", "0.10"))
         logger.info("[WakeWord] models=%s thresholds=%s", self.names, self.thresholds)
 
-    def _record(self, event: str, model: str, score: float, frame_int16, now: float):
-        """Événement wake → buffer mémoire (JAMAIS d'I/O ici — boucle audio temps réel)."""
+    def _record(self, event: str, model: str, score: float, frame_int16, now: float,
+                threshold: float | None = None):
+        """Événement wake → buffer mémoire (JAMAIS d'I/O ici — boucle audio temps réel).
+
+        threshold : seuil EFFECTIF du contexte (override capture/lecture/conversing compris).
+        Sans lui, la télémétrie journalisait toujours le défaut du modèle (0.85 pour stop)
+        même quand un override 0.5/0.70 l'avait avalé → triggers à score<threshold incohérents
+        et near-miss mal cadrés → calibration corrompue (audit 07/07). Fallback : défaut modèle."""
         try:
             rms = float(np.sqrt(np.mean((frame_int16.astype(np.float32) / 32768.0) ** 2)))
         except Exception:
             rms = None
+        thr = threshold if threshold is not None else self.thresholds.get(model, 0.5)
         with self._events_lock:
             if len(self._events) >= 500:
                 self._events.pop(0)
             self._events.append({
                 "ts": datetime.now(timezone.utc).isoformat(), "event": event, "model": model,
                 "score": round(float(score), 4),
-                "threshold": float(self.thresholds.get(model, 0.5)),
+                "threshold": float(thr),
                 "rms": (round(rms, 5) if rms is not None else None), "state": self.state_hint,
             })
 
@@ -107,14 +114,18 @@ class WakeWord:
             if score >= thr and now - self._last.get(name, 0.0) >= self.cooldown:
                 ev = self._emit(name, score, now)
                 self._record("trigger_interrupt" if ev == "interrupt" else "trigger_activate",
-                             name, score, frame_int16, now)
+                             name, score, frame_int16, now, threshold=thr)
                 return ev
         # Télémétrie : un seul near-miss par frame (le meilleur modèle sous le seuil,
-        # mais > _log_min) → calibration terrain des seuils sans WAKE_DEBUG.
+        # mais > _log_min) → calibration terrain des seuils sans WAKE_DEBUG. On journalise
+        # le seuil EFFECTIF du meilleur modèle (override interrupt inclus), pas le défaut.
         if preds:
             best = max(preds, key=preds.get)
             if preds[best] > self._log_min:
-                self._record("near_miss", best, preds[best], frame_int16, now)
+                eff = self.thresholds.get(best, 0.5)
+                if interrupt_threshold is not None and best == self._interrupt_key:
+                    eff = interrupt_threshold
+                self._record("near_miss", best, preds[best], frame_int16, now, threshold=eff)
         return None
 
     def process_interrupt_only(self, frame_int16: np.ndarray, threshold: float | None = None) -> str | None:
@@ -142,9 +153,11 @@ class WakeWord:
                 self.model.reset()
             except Exception:
                 pass
-            self._record("trigger_interrupt", self._interrupt_key, score, frame_int16, now)
+            self._record("trigger_interrupt", self._interrupt_key, score, frame_int16, now,
+                         threshold=eff)
             return "interrupt"
         # Télémétrie : near-miss du modèle interrupt (sous le seuil mais > _log_min).
+        # Seuil EFFECTIF du contexte (eff : override capture/lecture), pas le défaut.
         if score > self._log_min:
-            self._record("near_miss", self._interrupt_key, score, frame_int16, now)
+            self._record("near_miss", self._interrupt_key, score, frame_int16, now, threshold=eff)
         return None

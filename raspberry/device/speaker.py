@@ -125,8 +125,12 @@ class TargetSpeaker:
             score = max(float(np.dot(emb, ref)) for _, ref in self._refs)
             return score >= self.threshold, score
         except Exception as e:
-            logger.warning("[TargetSpeaker] erreur embedding (%s) → fallback", e)
-            self.available = False
+            # Échec PONCTUEL (frame bruitée, cast, run ONNX transitoire) → fail-open sur CE
+            # tour seulement. NE PLUS faire self.available=False : ça DÉSACTIVAIT
+            # DÉFINITIVEMENT toutes les défenses locuteur (verify, stop-guard, follow-up,
+            # barge-in) jusqu'au reboot, sur une seule exception. available=False reste
+            # réservé à l'échec de CHARGEMENT du modèle à l'init (P9-C).
+            logger.warning("[TargetSpeaker] erreur embedding (%s) → fallback (fail-open ponctuel)", e)
             return None, 0.0
 
     def verify(self, pcm_int16: np.ndarray):
