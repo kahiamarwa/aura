@@ -16,9 +16,15 @@ Le levier n°1 : des positifs enregistrés **à travers le pipeline réel** (can
 ```bash
 cd ~/aura/raspberry && source device/venv/bin/activate
 
-# 1. ~60 prises de « Dis Aura » (varie : 1/3/5 m, voix normale/forte/douce,
-#    plusieurs locuteurs si possible, dos tourné, en marchant…)
-python -m device.tools.collect_wake_samples --positives 60
+# 0. Purger une éventuelle collecte ratée :
+rm -rf ~/wake_samples/positive_real
+
+# 1. ~60 captures DÉCLENCHÉES par le wake actuel (mode flexible : laisse tourner,
+#    dis « Dis Aura » librement — 1/3/5 m, voix variées, plusieurs locuteurs,
+#    dos tourné, en marchant. Chaque détection ≥ 0.20 sauvegarde 3 s d'audio.)
+python -m device.tools.collect_wake_samples --wake-triggered 60
+#    Le score pic est dans le nom (wake_0007_s042.wav = 0.42) : à la fin,
+#    réécouter les < 030 (aplay) et supprimer les faux positifs.
 
 # 2. 30 min d'ambiance de bureau SANS wake word (fonds négatifs réalistes)
 python -m device.tools.collect_wake_samples --ambient-minutes 30
@@ -27,7 +33,7 @@ python -m device.tools.collect_wake_samples --ambient-minutes 30
 scp -r pi@<ip-du-pi>:~/wake_samples ./wake_samples_xvf3800
 ```
 
-Chaque prise positive affiche son RMS — les `⚠️ très faible` (< 0.005) sont à refaire.
+Chaque capture affiche son score pic ; les essais FAIBLES (0.20-0.35) sont précieux — ce sont exactement ceux que la v2 rate et que la v3 doit apprendre.
 
 ---
 

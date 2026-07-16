@@ -2,19 +2,25 @@
 
 Enregistre à travers le pipeline de capture RÉEL d'Aura (MicStream : canal ASR
 du XVF3800 + gain numérique + resample éventuel) — le modèle apprend donc
-exactement ce qu'il verra à l'exécution. Deux modes :
+exactement ce qu'il verra à l'exécution. Trois modes :
 
-  # 1. Positifs : 60 prises guidées par bips (dire « Dis Aura » après chaque bip)
+  # 1. RECOMMANDÉ — déclenché par le wake word ACTUEL : laisse tourner, dis
+  #    « Dis Aura » quand tu veux, où tu veux ; chaque détection (seuil abaissé
+  #    à 0.20) sauvegarde automatiquement les ~3 s autour. Zéro bip, flexible.
+  python -m device.tools.collect_wake_samples --wake-triggered 60
+
+  # 2. Prises guidées par bips (ancienne méthode, rythme imposé)
   python -m device.tools.collect_wake_samples --positives 60
 
-  # 2. Ambiant : 30 min de vie de bureau (fonds NÉGATIFS réalistes pour l'augmentation)
+  # 3. Ambiant : 30 min de vie de bureau (fonds NÉGATIFS réalistes)
   python -m device.tools.collect_wake_samples --ambient-minutes 30
 
 Sortie : ~/wake_samples/positive_real/*.wav et ~/wake_samples/background_real/*.wav
 (16 kHz mono 16-bit — le format attendu par le notebook d'entraînement).
 
-Conseils de prise (positifs) : varier distance (1/3/5 m), voix (normale, forte,
-douce, rapide), locuteurs (toute personne disponible), orientation. ~2 s par prise.
+Mode wake-triggered : le score pic est dans le nom du fichier (wake_0007_s042.wav
+= 0.42) → à la fin, réécouter/purger les captures suspectes (< 0.30 = possible
+faux positif à vérifier). Varier distance (1/3/5 m), voix, locuteurs, orientation.
 """
 
 import os
@@ -74,6 +80,57 @@ def collect_positives(n: int, seconds: float):
     print(f"\n✓ Terminé — {n} prises dans {out}")
 
 
+def collect_wake_triggered(n_target: int, min_score: float, window_s: float = 3.0,
+                           tail_s: float = 0.8):
+    """Mode flexible : le modèle wake ACTUEL déclenche la sauvegarde.
+
+    Buffer circulaire de `window_s` ; dès que le score du modèle activate dépasse
+    `min_score` (bien SOUS le seuil de prod : on veut AUSSI les essais faibles —
+    ce sont eux qui manquent au modèle), on capture encore `tail_s` (fin de la
+    phrase), puis on écrit la fenêtre. Cooldown 2 s + reset anti-doublon."""
+    from ..wakeword import WakeWord
+    out = os.path.join(OUT_DIR, "positive_real")
+    os.makedirs(out, exist_ok=True)
+    idx = len(os.listdir(out))
+    wake = WakeWord()
+    key = next((m for m in wake.names if "stop" not in m.lower()), wake.names[0])
+    ring_max = int(window_s * SR)
+    tail_frames = max(1, int(tail_s * SR / config.FRAME_SAMPLES))
+    ring = np.zeros(0, dtype=np.int16)
+    captured = 0
+    cooldown_until = 0.0
+    print(f"── Collecte déclenchée par « {key} » (score ≥ {min_score:.2f}) → {out}")
+    print(f"   Dis « Dis Aura » librement (distances, voix, locuteurs variés).")
+    print(f"   Objectif : {n_target} captures. Ctrl+C pour arrêter à tout moment.\n")
+    try:
+        with MicStream() as mic:
+            frames = mic.frames()
+            for frame in frames:
+                ring = np.concatenate([ring, frame])[-ring_max:]
+                score = float(wake.model.predict(frame).get(key, 0.0))
+                if score >= min_score and time.monotonic() >= cooldown_until:
+                    peak = score
+                    for _ in range(tail_frames):     # fin de phrase
+                        f2 = next(frames)
+                        ring = np.concatenate([ring, f2])[-ring_max:]
+                        peak = max(peak, float(wake.model.predict(f2).get(key, 0.0)))
+                    fname = f"wake_{idx + captured:04d}_s{int(round(peak * 100)):03d}.wav"
+                    _write_wav(os.path.join(out, fname), ring.copy())
+                    captured += 1
+                    print(f"  ✓ [{captured}/{n_target}] pic={peak:.2f} → {fname}")
+                    try:
+                        wake.model.reset()           # anti-doublon sur la même phrase
+                    except Exception:
+                        pass
+                    cooldown_until = time.monotonic() + 2.0
+                    if captured >= n_target:
+                        break
+    except KeyboardInterrupt:
+        print("\n(arrêt demandé)")
+    print(f"\n✓ {captured} captures dans {out}")
+    print("  Relire les scores faibles (s0xx < 030) : purger les faux positifs.")
+
+
 def collect_ambient(minutes: float, slice_s: float = 30.0):
     out = os.path.join(OUT_DIR, "background_real")
     os.makedirs(out, exist_ok=True)
@@ -94,15 +151,21 @@ def collect_ambient(minutes: float, slice_s: float = 30.0):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--positives", type=int, default=0, help="nombre de prises « Dis Aura »")
+    ap.add_argument("--wake-triggered", type=int, default=0, metavar="N",
+                    help="mode flexible : N captures déclenchées par le wake word actuel")
+    ap.add_argument("--min-score", type=float, default=0.20,
+                    help="seuil de capture du mode wake-triggered (défaut 0.20)")
+    ap.add_argument("--positives", type=int, default=0, help="nombre de prises guidées par bips")
     ap.add_argument("--seconds", type=float, default=2.0, help="durée d'une prise positive")
     ap.add_argument("--ambient-minutes", type=float, default=0, help="minutes d'ambiance à capturer")
     args = ap.parse_args()
-    if not args.positives and not args.ambient_minutes:
+    if not args.wake_triggered and not args.positives and not args.ambient_minutes:
         ap.print_help()
         sys.exit(1)
     print(f"Pipeline de capture : device={config.INPUT_DEVICE!r} canaux={config.AUDIO_INPUT_CHANNELS} "
           f"canal={config.AUDIO_INPUT_CHANNEL} gain=×{config.AUDIO_INPUT_GAIN:g}\n")
+    if args.wake_triggered:
+        collect_wake_triggered(args.wake_triggered, args.min_score)
     if args.positives:
         collect_positives(args.positives, args.seconds)
     if args.ambient_minutes:
