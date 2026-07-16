@@ -72,6 +72,13 @@ LED_R_PIN = int(os.getenv("LED_R_PIN", "13"))   # broche physique 33
 LED_G_PIN = int(os.getenv("LED_G_PIN", "19"))   # broche physique 35
 LED_B_PIN = int(os.getenv("LED_B_PIN", "26"))   # broche physique 37
 
+# ── Anneau LED du ReSpeaker XVF3800 = LED d'état (WS2812 12 LED) ──────
+# L'anneau de l'array devient l'indicateur d'état d'Aura (bien plus visible que
+# la LED GPIO pour un public malvoyant). Tourne EN PARALLÈLE du LedController.
+# EXPÉRIMENTAL : firmware ReSpeaker ≥ 2.0.10 requis + pyusb/libusb + règle udev
+# MODE 0666 pour 2886:001a (cf. manuel §1/§3.5). OFF par défaut.
+XVF_LED = os.getenv("XVF_LED", "0") == "1"
+
 # Détection « micro coupé » : durée de silence PLAT (que des zéros = source morte,
 # cas AEC où PipeWire envoie du silence au lieu de couper le flux) → LED rouge.
 MIC_DEAD_S = float(os.getenv("MIC_DEAD_S", "3.0"))

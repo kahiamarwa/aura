@@ -120,10 +120,27 @@ Le signal sera plus propre → les scores wake montent. À re-régler éventuell
 - **🚫 `save_configuration` : INTERDIT** — corrompt la DataPartition, le device n'énumère
   plus qu'en Safe Mode (bug #8, non corrigé confirmé). La persistance se fait **côté Pi**
   (service qui ré-applique les réglages à chaque boot), jamais en flash.
-- **LED ring** : **laisser le défaut** (rainbow → doa) tant que le bug #18 n'est pas résolu.
-  Ne PAS scripter `led_effect`/`GPO_WRITE_VALUE` en prod : un device a été durablement
-  cassé (micros muets, DoA gelée) après combos LED/GPO + persistance. Le pilotage LED custom
-  n'est ouvert qu'en v2.0.10, sur unité de test. (Voir §5 « Stratégie LED » du manuel.)
+- **LED ring = LED d'état d'Aura** — intégration disponible via **`XVF_LED=1`**
+  (EXPÉRIMENTAL ; firmware **≥ 2.0.10**, `pyusb`+`libusb`, **règle udev requise** MODE 0666
+  pour `2886:001a`, cf. §3.5 du manuel). OFF par défaut. Le module `device/xvf_led.py`
+  n'écrit QUE `LED_*` (resid 20), **jamais** `GPO_WRITE_VALUE` ni `save_configuration`
+  (garde-fous bugs #18/#8), seulement sur changement d'état, dédupliqué et fail-safe
+  (3 échecs → arrêt définitif). En écoute, l'effet **doa** oriente le halo vers le locuteur.
+
+  | État Aura | Effet | Couleur(s) | Luminosité |
+  |---|---|---|---|
+  | IDLE | breath (lent) | orange `0xE36B2B` | 60 |
+  | LISTENING | **doa** | base `0x201510` + pointeur `0xE36B2B` | 200 |
+  | THINKING | breath (rapide) | cyan `0x0E7490` | 150 |
+  | SPEAKING | solid | orange `0xE36B2B` | 140 |
+  | CONVERSING | doa | base `0x201510` + pointeur `0xE36B2B` | 120 |
+  | MUTED | solid | rouge `0xB91C1C` | 90 |
+  | ERROR | solid | rouge vif `0xEF4444` | 200 |
+  | ENROLLING | breath (lent) | violet `0x6D28D9` | 120 |
+
+  Si `XVF_LED=0` (défaut), **laisser le défaut firmware** (rainbow → doa). Rappel bug #18 :
+  un device a été durablement cassé (micros muets, DoA gelée) après combos LED/GPO +
+  persistance → n'activer `XVF_LED` qu'en v2.0.10, jamais avec `save_configuration`.
 - **Bouton mute matériel** de l'array : coupe les micros dans la puce (`X0D30`, LED rouge) —
   complémentaire du mute logiciel d'Aura, mais Aura ne le « voit » pas (l'audio devient
   silence plat → détection « micro mort » après MIC_DEAD_S). Lecture du bouton (`X1D09`)

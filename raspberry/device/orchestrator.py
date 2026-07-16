@@ -31,6 +31,7 @@ from .speaker import TargetSpeaker
 from .audio_io import MicStream, Player, play_beep, play_beep_seq
 from .context import AmbientContext
 from .led_controller import LedController
+from .xvf_led import XvfLedRing
 from .smart_turn import SmartTurn
 from . import stream_client
 from . import cloud
@@ -58,6 +59,7 @@ class Orchestrator:
         self.player = Player()
         self.ambient = AmbientContext()
         self.led = LedController()       # LED d'états (no-op si LED_ENABLED=0)
+        self.ring = XvfLedRing(enabled=config.XVF_LED)  # anneau LED XVF3800 (no-op si XVF_LED=0)
         self.smart_turn = SmartTurn()    # détection de tour (chemin B ; no-op si OFF)
         self.state = "IDLE"
         self.last_transcript = ""        # dernière commande (pour l'affichage live)
@@ -84,6 +86,10 @@ class Orchestrator:
         except Exception:
             pass
         self.led.set_state(new)          # LED physique suit l'état (comme l'orbe)
+        try:
+            self.ring.set_state(new)     # anneau LED XVF3800 (no-op si désactivé)
+        except Exception:
+            pass
         tr = transcript if transcript is not None else (
             self.last_transcript if new in ("THINKING", "SPEAKING") else "")
         try:
@@ -122,6 +128,10 @@ class Orchestrator:
         d'enrôlement pilote lui-même la LED avec ses patterns dédiés)."""
         self.state = "ENROLLING"
         self._seq += 1
+        try:
+            self.ring.set_state("ENROLLING")   # anneau : respiration violette (le GPIO garde ses patterns dédiés)
+        except Exception:
+            pass
         try:
             self._state_q.put_nowait(("ENROLLING", self._seq, transcript))
         except Exception:

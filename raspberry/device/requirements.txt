@@ -13,3 +13,6 @@ scipy>=1.10          # resampling 48kHz -> 16kHz (cartes USB sans 16kHz natif)
 onnxruntime>=1.17.0
 httpx==0.28.1
 scikit-learn>=1.3    # importé par openwakeword au chargement
+pyusb>=1.2           # anneau LED XVF3800 (XVF_LED=1, optionnel) : contrôle vendor USB.
+                     # Nécessite libusb (apt: libusb-1.0-0) + règle udev MODE 0666 pour
+                     # 2886:001a (cf. manuel §1/§3.5). Absent → l'anneau se met en no-op.
