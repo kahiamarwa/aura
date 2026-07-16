@@ -93,70 +93,80 @@ def _rgb(c: int) -> int:
     # return ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF)
 
 
-# Palette Aura
-_ORANGE = 0xE36B2B     # orange signature Aura
-_DOA_BASE = 0x201510   # halo de fond sombre en mode doa
-_CYAN = 0x0E7490       # réflexion
-_RED = 0xB91C1C        # muet / micro coupé
-_RED_BRIGHT = 0xEF4444 # erreur
-_VIOLET = 0x6D28D9     # enrôlement vocal
+# Palette — ALIGNÉE sur le langage couleur du produit (LED GPIO + orbe web) :
+# ambre=repos, VERT=écoute, BLEU=réflexion, VIOLET=parole, CYAN=suivi, ROUGE=mute.
+_AMBRE = 0xE36B2B      # IDLE — repos (identité Aura)
+_VERT = 0x00FF1A       # LISTENING — écoute (pointeur DoA)
+_BLEU = 0x0033FF       # THINKING — réflexion (respiration)
+_VIOLET = 0x9933FF     # SPEAKING — Aura parle
+_CYAN = 0x00CCFF       # CONVERSING — fenêtre de suivi (pointeur DoA)
+_ROUGE = 0xFF0000      # MUTED / ERROR
+_BLANC = 0x999999      # ENROLLING (le GPIO utilise du gris/vert pour ce flux)
+_DOA_BASE = 0x101008   # halo de fond sombre en mode doa
 
-# ── État Aura → séquence d'écritures (≤ 4 : couleur(s), luminosité, [vitesse], effet) ──
-# Ordre : paramètres AVANT l'effet, pour que l'effet s'active avec la bonne couleur
-# (évite un flash de couleur transitoire).
+# ── État Aura → séquence d'écritures ──
+# Ordre : EFFET D'ABORD, puis couleur/vitesse/luminosité — c'est l'ordre de
+# l'exemple OFFICIEL (host_control/README : led_effect puis led_color/speed/
+# brightness). Terrain 16/07 : avec l'ordre inverse (couleur avant effet),
+# certaines couleurs ne prenaient pas (tout restait orange) — le firmware
+# applique visiblement la couleur au mode ACTIF.
 _STATE_WRITES = {
-    # Veille discrète : respiration orange douce, lente, peu lumineuse.
+    # Repos : respiration ambre douce et lente.
     "IDLE": [
-        (_LED_COLOR, [_rgb(_ORANGE)]),
+        (_LED_EFFECT, [_BREATH]),
+        (_LED_COLOR, [_rgb(_AMBRE)]),
+        (_LED_SPEED, [_SLOW]),
         (_LED_BRIGHTNESS, [_b(130)]),
-        (_LED_SPEED, [_SLOW]),
-        (_LED_EFFECT, [_BREATH]),
     ],
-    # Écoute : le halo DoA pointe le locuteur (fond sombre + pointeur orange vif).
+    # Écoute : halo DoA — pointeur VERT qui suit le locuteur, très lumineux.
     "LISTENING": [
-        (_LED_DOA_COLOR, [_rgb(_DOA_BASE), _rgb(_ORANGE)]),
-        (_LED_BRIGHTNESS, [_b(200)]),
         (_LED_EFFECT, [_DOA]),
+        (_LED_DOA_COLOR, [_rgb(_DOA_BASE), _rgb(_VERT)]),
+        (_LED_BRIGHTNESS, [_b(220)]),
     ],
-    # Réflexion : respiration cyan rapide.
+    # Réflexion : respiration BLEUE rapide.
     "THINKING": [
-        (_LED_COLOR, [_rgb(_CYAN)]),
-        (_LED_BRIGHTNESS, [_b(150)]),
+        (_LED_EFFECT, [_BREATH]),
+        (_LED_COLOR, [_rgb(_BLEU)]),
         (_LED_SPEED, [_FAST]),
-        (_LED_EFFECT, [_BREATH]),
+        (_LED_BRIGHTNESS, [_b(160)]),
     ],
-    # Parole : couleur unie orange.
+    # Parole : VIOLET uni (comme la LED GPIO).
     "SPEAKING": [
-        (_LED_COLOR, [_rgb(_ORANGE)]),
-        (_LED_BRIGHTNESS, [_b(140)]),
         (_LED_EFFECT, [_SOLID]),
-    ],
-    # Suivi (fenêtre) : comme LISTENING mais plus tamisé.
-    "CONVERSING": [
-        (_LED_DOA_COLOR, [_rgb(_DOA_BASE), _rgb(_ORANGE)]),
-        (_LED_BRIGHTNESS, [_b(120)]),
-        (_LED_EFFECT, [_DOA]),
-    ],
-    # Micro coupé (mode confidentiel) : rouge uni tamisé.
-    "MUTED": [
-        (_LED_COLOR, [_rgb(_RED)]),
-        (_LED_BRIGHTNESS, [_b(90)]),
-        (_LED_EFFECT, [_SOLID]),
-    ],
-    # Erreur (si l'orchestrateur l'émet) : rouge vif.
-    "ERROR": [
-        (_LED_COLOR, [_rgb(_RED_BRIGHT)]),
-        (_LED_BRIGHTNESS, [_b(200)]),
-        (_LED_EFFECT, [_SOLID]),
-    ],
-    # Enrôlement vocal : respiration violette.
-    "ENROLLING": [
         (_LED_COLOR, [_rgb(_VIOLET)]),
-        (_LED_BRIGHTNESS, [_b(120)]),
-        (_LED_SPEED, [_SLOW]),
+        (_LED_BRIGHTNESS, [_b(150)]),
+    ],
+    # Suivi : halo DoA — pointeur CYAN (« à toi, tu peux enchaîner »).
+    "CONVERSING": [
+        (_LED_EFFECT, [_DOA]),
+        (_LED_DOA_COLOR, [_rgb(_DOA_BASE), _rgb(_CYAN)]),
+        (_LED_BRIGHTNESS, [_b(160)]),
+    ],
+    # Micro coupé (mode confidentiel) : ROUGE uni tamisé.
+    "MUTED": [
+        (_LED_EFFECT, [_SOLID]),
+        (_LED_COLOR, [_rgb(_ROUGE)]),
+        (_LED_BRIGHTNESS, [_b(100)]),
+    ],
+    # Erreur : ROUGE vif.
+    "ERROR": [
+        (_LED_EFFECT, [_SOLID]),
+        (_LED_COLOR, [_rgb(_ROUGE)]),
+        (_LED_BRIGHTNESS, [_b(230)]),
+    ],
+    # Enrôlement vocal : respiration BLANCHE douce.
+    "ENROLLING": [
         (_LED_EFFECT, [_BREATH]),
+        (_LED_COLOR, [_rgb(_BLANC)]),
+        (_LED_SPEED, [_SLOW]),
+        (_LED_BRIGHTNESS, [_b(140)]),
     ],
 }
+
+# Auto-test visuel au démarrage (XVF_LED_TEST=1) : cycle TOUS les états ~2 s
+# chacun pour valider couleurs/effets d'un coup, sans piloter l'assistant.
+_SELF_TEST = os.getenv("XVF_LED_TEST", "0") == "1"
 
 _STOP = object()   # sentinelle d'arrêt du worker
 
@@ -248,6 +258,18 @@ class XvfLedRing:
 
     # ── Worker (thread dédié) ───────────────────────────────────────────
     def _run(self):
+        if _SELF_TEST:
+            import time as _t
+            logger.info("[xvf-led] AUTO-TEST : cycle de tous les états (~2 s chacun) — "
+                        "IDLE ambre, LISTENING vert(DoA), THINKING bleu, SPEAKING violet, "
+                        "CONVERSING cyan(DoA), MUTED rouge, ENROLLING blanc")
+            for st in ("IDLE", "LISTENING", "THINKING", "SPEAKING",
+                       "CONVERSING", "MUTED", "ENROLLING"):
+                if self._stop or not self.available:
+                    break
+                self._apply(st)
+                _t.sleep(2.0)
+            self._applied = None      # force la réécriture de l'état réel ensuite
         while True:
             state = self._q.get()
             if state is _STOP or self._stop:
