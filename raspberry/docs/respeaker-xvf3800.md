@@ -46,6 +46,15 @@ aplay -D plughw:X,0 /tmp/test.wav
 continu, et en même temps enregistrer ; parler par-dessus. À la réécoute, la musique
 doit être quasi absente de l'enregistrement, la voix claire.
 
+> **⚙️ Mise à jour firmware RECOMMANDÉE AVANT la mise en service.** Les unités d'usine
+> sortent en ~2.0.7. Flasher **v2.0.10** (dernière) corrige le gel du DoA sous LED custom
+> et fiabilise l'array. Vérifier la version avec `./xvf_host VERSION`, puis suivre la
+> **procédure DFU pas-à-pas (section 3) du manuel de référence**
+> [`respeaker-xvf3800-reference.md`](./respeaker-xvf3800-reference.md) :
+> `sudo dfu-util -R -e -a 1 -D respeaker_xvf3800_usb_dfu_firmware_v2.0.10.bin`
+> (port USB-C **près du jack**, `-a 1` = partition Upgrade, ⛔ jamais de `.bin` téléchargé
+> via « save as » GitHub). Ne pas flasher tant que la capture de base n'est pas validée.
+
 ## 3. Configuration Aura (Pi)
 
 Dans `~/.aura/env` (ou `raspberry/device/.env`) — remplacer X par le numéro de carte :
@@ -97,18 +106,46 @@ Le signal sera plus propre → les scores wake montent. À re-régler éventuell
 
 ## 6. Outils avancés (optionnel)
 
-- `xvf_host` (dépôt respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY, dossier
-  `host_control/rpi_64bit/`) : version firmware, direction d'arrivée (DoA), LED ring,
-  gains, `save_configuration 1` pour persister sur la puce.
-- LED ring de l'array : `./xvf_host led_effect 0` pour l'éteindre (Aura a déjà sa LED
-  d'état GPIO ; deux anneaux qui clignotent = confusion).
-- Bouton mute matériel de l'array : coupe les micros dans la puce (LED rouge) —
-  complémentaire du mute logiciel d'Aura, mais Aura ne le « voit » pas (l'audio devient
-  silence plat → détection « micro mort » après MIC_DEAD_S).
-- Firmware : `sudo apt install dfu-util && sudo dfu-util -l` (variante USB requise,
-  PAS la variante I2S/Home-Assistant qui est en 48 kHz I2S).
+> **⚠️ RÈGLE D'OR — `xvf_host` en LECTURE SEULE tant que le firmware n'est pas ≥ 2.0.10.**
+> Aucune écriture, et **JAMAIS `save_configuration`** (quelle que soit la version). Trois
+> bugs ouverts peuvent **briquer durablement** l'array : `save_configuration` corrompt la
+> flash (#8), les combos LED/GPO le cassent (#18), et un reboot casse la capture (#20).
+> Manuel complet, table des commandes, DFU et contournements :
+> **[`respeaker-xvf3800-reference.md`](./respeaker-xvf3800-reference.md)**.
 
-## 7. Rollback (2 minutes)
+- `xvf_host` (dépôt respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY, dossier
+  `host_control/rpi_64bit/`) — **commandes de LECTURE sûres** : `VERSION` (healthcheck),
+  `DOA_VALUE` (direction du locuteur + VAD), `AEC_SPENERGY_VALUES` (VAD matériel),
+  `AEC_AECCONVERGED` / `AEC_RT60` (debug AEC — `RT60 = 1.4e-45` = état warm-reboot cassé).
+- **🚫 `save_configuration` : INTERDIT** — corrompt la DataPartition, le device n'énumère
+  plus qu'en Safe Mode (bug #8, non corrigé confirmé). La persistance se fait **côté Pi**
+  (service qui ré-applique les réglages à chaque boot), jamais en flash.
+- **LED ring** : **laisser le défaut** (rainbow → doa) tant que le bug #18 n'est pas résolu.
+  Ne PAS scripter `led_effect`/`GPO_WRITE_VALUE` en prod : un device a été durablement
+  cassé (micros muets, DoA gelée) après combos LED/GPO + persistance. Le pilotage LED custom
+  n'est ouvert qu'en v2.0.10, sur unité de test. (Voir §5 « Stratégie LED » du manuel.)
+- **Bouton mute matériel** de l'array : coupe les micros dans la puce (`X0D30`, LED rouge) —
+  complémentaire du mute logiciel d'Aura, mais Aura ne le « voit » pas (l'audio devient
+  silence plat → détection « micro mort » après MIC_DEAD_S). Lecture du bouton (`X1D09`)
+  **absente de `xvf_host.py`** → binaire C requis.
+- **Firmware / DFU** : `sudo apt install dfu-util && sudo dfu-util -l` (variante **USB**
+  requise, PAS la variante I2S/Home-Assistant qui est en 48 kHz I2S). Procédure de flash
+  pas-à-pas, Safe Mode et récupération de brick : **section 3 du manuel de référence**.
+
+## 7. Dépannage & rollback
+
+> **🔴 Bug warm-reboot (#20) — à connaître AVANT tout.** Après un **reboot logiciel du Pi**,
+> l'array ré-énumère normalement (`arecord -l` OK) mais **la capture devient un bourdonnement
+> inintelligible** (l'AEC ne se recalibre pas car VBUS reste haut). Deux correctifs :
+> **(1) débrancher/rebrancher physiquement l'array** = corrige immédiatement ; **(2) sans
+> débranchage : `./xvf_host REBOOT 1`** (re-calibre l'AEC ; le device ré-énumère à une
+> nouvelle adresse USB, attendre 5–8 s). À industrialiser en **service systemd lancé à chaque
+> boot** avant l'orchestrateur (workaround officiel Seeed + Pollen Robotics). Confirmer l'état
+> cassé : `./xvf_host AEC_RT60` → `1.4e-45`. Détails et séquence complète : section 4 du manuel
+> de référence. Symptôme voisin : `arecord` → `Input/output error` immédiat → **replug
+> physique**, puis envisager la MAJ firmware (§2).
+
+### Rollback (2 minutes)
 
 Rebrancher l'ancien micro USB + enceinte sur le jack Pi, puis dans l'env :
 ```bash
