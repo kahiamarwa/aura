@@ -23,6 +23,7 @@ Protocole (reconstitué depuis `python_control/xvf_host.py`, cf. manuel §2.2/§
    3 échecs consécutifs on coupe DÉFINITIVEMENT toute écriture (un device à
    moitié cassé ne doit plus être martelé).
 """
+import os
 import queue
 import struct
 import atexit
@@ -60,8 +61,22 @@ _LED_DOA_COLOR = (20, 17, "uint32")  # 2×uint32 : couleur de base + couleur du 
 # Ids d'effet
 _OFF, _BREATH, _RAINBOW, _SOLID, _DOA, _RING = 0, 1, 2, 3, 4, 5
 
-# Vitesses breath (échelle non documentée par XMOS — valeurs empiriques, ajustables).
-_SLOW, _FAST = 10, 40
+# Vitesses breath (échelle NON documentée par XMOS — empirique). Terrain 16/07 :
+# la valeur 10 « vibrait » (respiration trop nerveuse) → défaut abaissé, et
+# réglable par env sans toucher au code : XVF_LED_SPEED_SLOW / XVF_LED_SPEED_FAST.
+# Si la respiration reste trop rapide, essayer 1-2 ; si elle devient trop lente,
+# l'échelle est inversée → essayer 50-80.
+_SLOW = int(os.getenv("XVF_LED_SPEED_SLOW", "3"))
+_FAST = int(os.getenv("XVF_LED_SPEED_FAST", "25"))
+
+# Luminosité : multiplicateur global réglable (XVF_LED_BRIGHTNESS_SCALE=1.5 =
+# +50 % partout, plafonné 255). Terrain 16/07 : la veille à 60 était trop faible.
+_SCALE = float(os.getenv("XVF_LED_BRIGHTNESS_SCALE", "1.0"))
+
+
+def _b(v: int) -> int:
+    """Luminosité d'état × échelle globale, bornée 5-255."""
+    return min(255, max(5, int(v * _SCALE)))
 
 
 def _rgb(c: int) -> int:
@@ -93,51 +108,51 @@ _STATE_WRITES = {
     # Veille discrète : respiration orange douce, lente, peu lumineuse.
     "IDLE": [
         (_LED_COLOR, [_rgb(_ORANGE)]),
-        (_LED_BRIGHTNESS, [60]),
+        (_LED_BRIGHTNESS, [_b(130)]),
         (_LED_SPEED, [_SLOW]),
         (_LED_EFFECT, [_BREATH]),
     ],
     # Écoute : le halo DoA pointe le locuteur (fond sombre + pointeur orange vif).
     "LISTENING": [
         (_LED_DOA_COLOR, [_rgb(_DOA_BASE), _rgb(_ORANGE)]),
-        (_LED_BRIGHTNESS, [200]),
+        (_LED_BRIGHTNESS, [_b(200)]),
         (_LED_EFFECT, [_DOA]),
     ],
     # Réflexion : respiration cyan rapide.
     "THINKING": [
         (_LED_COLOR, [_rgb(_CYAN)]),
-        (_LED_BRIGHTNESS, [150]),
+        (_LED_BRIGHTNESS, [_b(150)]),
         (_LED_SPEED, [_FAST]),
         (_LED_EFFECT, [_BREATH]),
     ],
     # Parole : couleur unie orange.
     "SPEAKING": [
         (_LED_COLOR, [_rgb(_ORANGE)]),
-        (_LED_BRIGHTNESS, [140]),
+        (_LED_BRIGHTNESS, [_b(140)]),
         (_LED_EFFECT, [_SOLID]),
     ],
     # Suivi (fenêtre) : comme LISTENING mais plus tamisé.
     "CONVERSING": [
         (_LED_DOA_COLOR, [_rgb(_DOA_BASE), _rgb(_ORANGE)]),
-        (_LED_BRIGHTNESS, [120]),
+        (_LED_BRIGHTNESS, [_b(120)]),
         (_LED_EFFECT, [_DOA]),
     ],
     # Micro coupé (mode confidentiel) : rouge uni tamisé.
     "MUTED": [
         (_LED_COLOR, [_rgb(_RED)]),
-        (_LED_BRIGHTNESS, [90]),
+        (_LED_BRIGHTNESS, [_b(90)]),
         (_LED_EFFECT, [_SOLID]),
     ],
     # Erreur (si l'orchestrateur l'émet) : rouge vif.
     "ERROR": [
         (_LED_COLOR, [_rgb(_RED_BRIGHT)]),
-        (_LED_BRIGHTNESS, [200]),
+        (_LED_BRIGHTNESS, [_b(200)]),
         (_LED_EFFECT, [_SOLID]),
     ],
     # Enrôlement vocal : respiration violette.
     "ENROLLING": [
         (_LED_COLOR, [_rgb(_VIOLET)]),
-        (_LED_BRIGHTNESS, [120]),
+        (_LED_BRIGHTNESS, [_b(120)]),
         (_LED_SPEED, [_SLOW]),
         (_LED_EFFECT, [_BREATH]),
     ],
