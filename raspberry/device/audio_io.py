@@ -63,11 +63,14 @@ class MicStream:
         self._native_rate = self._pick_rate()
         ratio = self._native_rate // config.SAMPLE_RATE if self._native_rate >= config.SAMPLE_RATE else 1
         blocksize = config.FRAME_SAMPLES * max(ratio, 1)
+        # Multi-canal (ex. ReSpeaker XVF3800 : stéréo Conference/ASR) : on capture
+        # TOUS les canaux du device et frames() extrait AUDIO_INPUT_CHANNEL.
+        self._channels = max(1, config.AUDIO_INPUT_CHANNELS)
         self._stream = sd.RawInputStream(
             samplerate=self._native_rate,
             blocksize=blocksize,
             dtype="int16",
-            channels=1,
+            channels=self._channels,
             device=config.INPUT_DEVICE,
             callback=self._cb,
         )
@@ -112,7 +115,8 @@ class MicStream:
         for rate in (config.SAMPLE_RATE, 48000, 44100):
             try:
                 sd.check_input_settings(
-                    device=config.INPUT_DEVICE, samplerate=rate, channels=1, dtype="int16"
+                    device=config.INPUT_DEVICE, samplerate=rate,
+                    channels=max(1, config.AUDIO_INPUT_CHANNELS), dtype="int16"
                 )
                 return rate
             except Exception:
@@ -179,6 +183,11 @@ class MicStream:
                 continue
             empties = 0
             frame = np.frombuffer(raw, dtype=np.int16)
+            # Multi-canal (XVF3800…) : désentrelace et ne garde que le canal choisi
+            # (ch1 « ASR » optimisé reconnaissance vocale sur le ReSpeaker).
+            if self._channels > 1 and frame.size % self._channels == 0:
+                ch = min(config.AUDIO_INPUT_CHANNEL, self._channels - 1)
+                frame = np.ascontiguousarray(frame.reshape(-1, self._channels)[:, ch])
             # Cas AVEC AEC : PipeWire continue d'envoyer du SILENCE PLAT (min==max,
             # que des zéros) quand l'USB est coupé. → micro mort, on passe en rouge.
             if frame.size and int(frame.min()) == int(frame.max()):

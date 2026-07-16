@@ -93,6 +93,14 @@ elif AEC_ENABLED:
 else:
     INPUT_DEVICE = None
 
+# Capture multi-canal (micros array type ReSpeaker XVF3800) : le flux USB expose
+# PLUSIEURS canaux traités — ch0 « Conference » (oreille humaine), ch1 « ASR »
+# (optimisé reconnaissance vocale = ce que veulent openWakeWord/Deepgram).
+# Défauts 1/0 = comportement mono historique (micro USB simple).
+#   ReSpeaker XVF3800 : AUDIO_INPUT_CHANNELS=2  AUDIO_INPUT_CHANNEL=1
+AUDIO_INPUT_CHANNELS = int(os.getenv("AUDIO_INPUT_CHANNELS", "1"))
+AUDIO_INPUT_CHANNEL = int(os.getenv("AUDIO_INPUT_CHANNEL", "0"))
+
 # Sortie audio EXPLICITE (mpg123/aplay). Priorité :
 #   1. bridge pulse si AEC activé (référence d'écho)
 #   2. AUDIO_OUTPUT_DEVICE si défini (ex: "plughw:0" pour le jack 3,5mm) — BYPASSE PipeWire,
