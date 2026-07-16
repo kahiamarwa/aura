@@ -188,6 +188,12 @@ class MicStream:
             if self._channels > 1 and frame.size % self._channels == 0:
                 ch = min(config.AUDIO_INPUT_CHANNEL, self._channels - 1)
                 frame = np.ascontiguousarray(frame.reshape(-1, self._channels)[:, ch])
+            # Gain numérique (XVF3800 : canal ASR ~40× plus bas que les micros USB
+            # classiques) — APRÈS l'extraction de canal, AVANT la détection de
+            # silence plat (gain × 0 = 0 : la détection « micro mort » reste juste).
+            if config.AUDIO_INPUT_GAIN != 1.0:
+                frame = np.clip(frame.astype(np.int32) * config.AUDIO_INPUT_GAIN,
+                                -32768, 32767).astype(np.int16)
             # Cas AVEC AEC : PipeWire continue d'envoyer du SILENCE PLAT (min==max,
             # que des zéros) quand l'USB est coupé. → micro mort, on passe en rouge.
             if frame.size and int(frame.min()) == int(frame.max()):

@@ -107,6 +107,11 @@ else:
 #   ReSpeaker XVF3800 : AUDIO_INPUT_CHANNELS=2  AUDIO_INPUT_CHANNEL=1
 AUDIO_INPUT_CHANNELS = int(os.getenv("AUDIO_INPUT_CHANNELS", "1"))
 AUDIO_INPUT_CHANNEL = int(os.getenv("AUDIO_INPUT_CHANNEL", "0"))
+# Gain numérique de capture (×). Le canal ASR du XVF3800 sort ~40× plus bas que
+# l'ancien micro (RMS 0.005 vs 0.16-0.30) : les détections passent mais toutes les
+# marges (VAD follow-up, endpointing) sont comprimées. 6.0 recommandé sur XVF3800 ;
+# 1.0 = neutre (micros classiques). Écrêtage propre à ±32767.
+AUDIO_INPUT_GAIN = float(os.getenv("AUDIO_INPUT_GAIN", "1.0"))
 
 # Sortie audio EXPLICITE (mpg123/aplay). Priorité :
 #   1. bridge pulse si AEC activé (référence d'écho)
