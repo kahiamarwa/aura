@@ -111,6 +111,80 @@ config["background_paths_duplication_rate"] = [1, 1, 3]   # l'ambiance réelle p
 
 ---
 
+## Étape 2b — Positifs ElevenLabs : voix réalistes + PROSODIE variée (nouvelle cellule)
+
+Vulnérabilité identifiée sur la v2 : le modèle n'accroche qu'une seule « façon de dire »
+(un seul souffle, pas de pause entre les mots). Correctif : générer les positifs avec
+des **variantes de pause** (la ponctuation pilote la pause chez les TTS) × des **vitesses**
+× des **dizaines de voix ElevenLabs** (accents France/Canada/Belgique/Afrique selon les
+voix du compte). La clé API : via un secret Colab, JAMAIS en dur dans le notebook.
+
+```python
+# ── v3 : positifs ElevenLabs (voix réalistes, prosodie variée) ──
+import os, requests, subprocess, itertools, random, shutil
+from pathlib import Path
+from getpass import getpass
+
+ELEVEN_KEY = os.environ.get("ELEVENLABS_API_KEY") or getpass("Clé ElevenLabs : ").strip()
+HDRS = {"xi-api-key": ELEVEN_KEY}
+
+# 1. Voix du compte (ajouter des voix FR variées depuis la Voice Library au préalable)
+voices = requests.get("https://api.elevenlabs.io/v1/voices", headers=HDRS).json()["voices"]
+VOICE_IDS = [v["voice_id"] for v in voices]
+print(f"{len(voices)} voix :", [v["name"] for v in voices])
+
+# 2. Variantes prosodiques — la ponctuation contrôle L'ESPACE ENTRE LES MOTS
+TEXTS = ["dis aura", "dis aura.", "Dis Aura !", "dis, aura", "dis… aura", "dis. aura"]
+SPEEDS = [0.8, 0.95, 1.1]          # lent / normal / rapide
+
+OUT = Path("./eleven_positive"); OUT.mkdir(exist_ok=True)
+N_TARGET = 1500                     # ~12k caractères — négligeable sur le quota
+combos = list(itertools.product(VOICE_IDS, TEXTS, SPEEDS)) * 50
+random.shuffle(combos)
+made = len(list(OUT.glob("*.wav")))
+for voice_id, text, speed in combos:
+    if made >= N_TARGET: break
+    body = {"text": text, "model_id": "eleven_multilingual_v2",
+            "voice_settings": {"stability": random.uniform(0.3, 0.7),
+                               "similarity_boost": 0.8,
+                               "style": random.uniform(0.0, 0.4),
+                               "speed": speed}}
+    r = requests.post(f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+                      headers={**HDRS, "Content-Type": "application/json"},
+                      json=body, timeout=60)
+    if r.status_code == 422:        # modèle/voix sans réglage speed → retente sans
+        body["voice_settings"].pop("speed", None)
+        r = requests.post(f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+                          headers={**HDRS, "Content-Type": "application/json"},
+                          json=body, timeout=60)
+    if r.status_code != 200:
+        print("skip", voice_id, r.status_code); continue
+    mp3 = OUT / f"e_{made:05d}.mp3"; wav = OUT / f"e_{made:05d}.wav"
+    mp3.write_bytes(r.content)
+    subprocess.run(["ffmpeg", "-y", "-i", str(mp3), "-ar", "16000", "-ac", "1", str(wav)],
+                   capture_output=True)
+    mp3.unlink(); made += 1
+    if made % 100 == 0: print(f"{made}/{N_TARGET}")
+print(f"✓ {made} clips ElevenLabs")
+
+# 3. → dans positive_train (avec les synthétiques Piper/edge et les réels)
+mdir = "./my_custom_model/dis_aura/positive_train"
+os.makedirs(mdir, exist_ok=True)
+for w in OUT.glob("*.wav"): shutil.copy(w, f"{mdir}/{w.name}")
+print("✓ injectés dans positive_train")
+```
+
+Et pour que **Piper/edge-tts varient aussi la prosodie**, dans la cellule 3 :
+
+```python
+config["target_phrase"] = ["dis aura", "dis, aura", "dis… aura"]   # pause courte/moyenne/longue
+```
+
+⚠️ Garder les pauses ≤ ~0,8 s (des clips trop longs feraient gonfler la fenêtre
+d'analyse `total_length` du modèle — elle se calcule sur la durée médiane des clips).
+
+---
+
 ## Étape 3 — Négatifs difficiles (cellule 3, avant l'écriture du YAML)
 
 Le terrain a montré les confusions réelles (« Dis au rat test » a été transcrit tel
