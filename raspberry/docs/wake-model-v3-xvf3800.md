@@ -1,7 +1,7 @@
 # Wake word v3 — ré-entraînement adapté au ReSpeaker XVF3800
 
-Objectif : remplacer `Aura_test.onnx` (v2, entraîné 100 % synthétique sur l'acoustique
-de l'ancien micro) par un modèle v3 qui score 0.8+ sur le canal ASR du XVF3800.
+Objectif : remplacer `Aura_test.onnx` (v2) par un modèle v3 qui score 0.8+ sur le
+canal ASR du XVF3800. **Phrase cible : « Aura Test »** (décision produit 17/07).
 
 Base : le notebook existant `dis_aura_v2_20k_50k.ipynb` (Colab, openWakeWord).
 Trois corrections + deux ajouts. **Étape 0 obligatoire : la collecte sur le Pi.**
@@ -177,7 +177,8 @@ print("✓ injectés dans positive_train")
 Et pour que **Piper/edge-tts varient aussi la prosodie**, dans la cellule 3 :
 
 ```python
-config["target_phrase"] = ["dis aura", "dis, aura", "dis… aura"]   # pause courte/moyenne/longue
+target_word = "aura test"   # ← PHRASE CIBLE DU PRODUIT (décision 17/07)
+config["target_phrase"] = ["aura test", "aura, test", "aura… test"]   # pause courte/moyenne/longue
 ```
 
 ⚠️ Garder les pauses ≤ ~0,8 s (des clips trop longs feraient gonfler la fenêtre
@@ -192,9 +193,9 @@ quel par Deepgram) :
 
 ```python
 config["custom_negative_phrases"] = [
-    "au rat", "au rat test", "dis au revoir", "aura", "d'or à",
-    "il aura", "elle aura", "on aura", "aurait", "docteur ah",
-    "dis-moi", "dis donc", "et alors", "tiens ça alors",
+    "au rat test", "au rat", "aura", "un test", "le test", "ce test",
+    "il aura", "elle aura", "on aura", "aurait", "aura fait", "aura vite",
+    "au restaurant", "aura reste", "test test", "haut la tête",
 ]
 ```
 
