@@ -24,6 +24,7 @@ Protocole (reconstitué depuis `python_control/xvf_host.py`, cf. manuel §2.2/§
    moitié cassé ne doit plus être martelé).
 """
 import os
+import time
 import queue
 import struct
 import atexit
@@ -54,6 +55,7 @@ _MAX_FAILS = 3             # échecs consécutifs → désactivation définitive
 # ── Commandes LED (resid 20 — cf. §2.8). (resid, cmdid, type, nb_valeurs) ──
 _LED_EFFECT = (20, 12, "uint8")      # 0=off 1=breath 2=rainbow 3=solid 4=doa 5=ring
 _LED_BRIGHTNESS = (20, 13, "uint8")  # 0-255
+_LED_GAMMIFY = (20, 14, "uint8")     # correction gamma (teintes fidèles) — écrite à l'init
 _LED_SPEED = (20, 15, "uint8")       # vitesse breath/rainbow (échelle définie par la puce)
 _LED_COLOR = (20, 16, "uint32")      # couleur breath / solid
 _LED_DOA_COLOR = (20, 17, "uint32")  # 2×uint32 : couleur de base + couleur du pointeur DoA
@@ -93,16 +95,20 @@ def _rgb(c: int) -> int:
     # return ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF)
 
 
-# Palette — ALIGNÉE sur le langage couleur du produit (LED GPIO + orbe web) :
-# ambre=repos, VERT=écoute, BLEU=réflexion, VIOLET=parole, CYAN=suivi, ROUGE=mute.
-_AMBRE = 0xE36B2B      # IDLE — repos (identité Aura)
-_VERT = 0x00FF1A       # LISTENING — écoute (pointeur DoA)
-_BLEU = 0x0033FF       # THINKING — réflexion (respiration)
-_VIOLET = 0x9933FF     # SPEAKING — Aura parle
-_CYAN = 0x00CCFF       # CONVERSING — fenêtre de suivi (pointeur DoA)
-_ROUGE = 0xFF0000      # MUTED / ERROR
-_BLANC = 0x999999      # ENROLLING (le GPIO utilise du gris/vert pour ce flux)
+# Palette — couleurs CORRIGÉES POUR LE RENDU WS2812 (≠ hex écran : sur LED, la
+# faible part de vert du 0xE36B2B virait au rouge « sanguin » — terrain 17/07).
+# Langage : couleur = QUEL état ; mouvement = ce qu'Aura FAIT (lent=veille,
+# rotation=travail, directionnel=attention, fixe=certitude, rouge immobile=mute).
+_AMBRE = 0xFF8C00      # IDLE — ambre VRAI sur LED (repos)
+_VERT = 0x00FF40       # LISTENING — pointeur DoA qui suit le locuteur
+_VIOLET = 0xA030FF     # SPEAKING — Aura parle (fixe)
+_CYAN = 0x00C8FF       # CONVERSING — fenêtre de suivi (pointeur DoA doux)
+_ROUGE = 0xFF0000      # MUTED (fixe immobile = rien n'écoute) / ERROR (pouls bref)
+_BLANC = 0xB0B0B0      # ENROLLING — cérémonie neutre
 _DOA_BASE = 0x101008   # halo de fond sombre en mode doa
+# THINKING = rotation arc-en-ciel NATIVE (rainbow) : le « spinner » universel du
+# « ça travaille », animé par la puce (zéro écriture Pi). Compromis assumé : cet
+# état n'est plus bleu comme l'orbe web — la rotation prime sur la fidélité teinte.
 
 # ── État Aura → séquence d'écritures ──
 # Ordre : EFFET D'ABORD, puis couleur/vitesse/luminosité — c'est l'ordre de
@@ -111,51 +117,51 @@ _DOA_BASE = 0x101008   # halo de fond sombre en mode doa
 # certaines couleurs ne prenaient pas (tout restait orange) — le firmware
 # applique visiblement la couleur au mode ACTIF.
 _STATE_WRITES = {
-    # Repos : respiration ambre douce et lente.
+    # Repos : respiration ambre douce et lente, discrète (~40 %).
     "IDLE": [
         (_LED_EFFECT, [_BREATH]),
         (_LED_COLOR, [_rgb(_AMBRE)]),
         (_LED_SPEED, [_SLOW]),
-        (_LED_BRIGHTNESS, [_b(130)]),
+        (_LED_BRIGHTNESS, [_b(100)]),
     ],
-    # Écoute : halo DoA — pointeur VERT qui suit le locuteur, très lumineux.
+    # Écoute : halo DoA — pointeur VERT qui suit le locuteur, très lumineux (~85 %).
     "LISTENING": [
         (_LED_EFFECT, [_DOA]),
         (_LED_DOA_COLOR, [_rgb(_DOA_BASE), _rgb(_VERT)]),
         (_LED_BRIGHTNESS, [_b(220)]),
     ],
-    # Réflexion : respiration BLEUE rapide.
+    # Réflexion : ROTATION arc-en-ciel native (« ça tourne = ça travaille »).
     "THINKING": [
-        (_LED_EFFECT, [_BREATH]),
-        (_LED_COLOR, [_rgb(_BLEU)]),
+        (_LED_EFFECT, [_RAINBOW]),
         (_LED_SPEED, [_FAST]),
         (_LED_BRIGHTNESS, [_b(160)]),
     ],
-    # Parole : VIOLET uni (comme la LED GPIO).
+    # Parole : VIOLET plein FIXE (flux sortant, stable).
     "SPEAKING": [
         (_LED_EFFECT, [_SOLID]),
         (_LED_COLOR, [_rgb(_VIOLET)]),
         (_LED_BRIGHTNESS, [_b(150)]),
     ],
-    # Suivi : halo DoA — pointeur CYAN (« à toi, tu peux enchaîner »).
+    # Suivi : halo DoA — pointeur CYAN doux (« à toi, tu peux enchaîner »).
     "CONVERSING": [
         (_LED_EFFECT, [_DOA]),
         (_LED_DOA_COLOR, [_rgb(_DOA_BASE), _rgb(_CYAN)]),
-        (_LED_BRIGHTNESS, [_b(160)]),
+        (_LED_BRIGHTNESS, [_b(140)]),
     ],
-    # Micro coupé (mode confidentiel) : ROUGE uni tamisé.
+    # Micro coupé : ROUGE FIXE immobile (contrat : rien ne bouge = rien n'écoute).
     "MUTED": [
         (_LED_EFFECT, [_SOLID]),
         (_LED_COLOR, [_rgb(_ROUGE)]),
         (_LED_BRIGHTNESS, [_b(100)]),
     ],
-    # Erreur : ROUGE vif.
+    # Erreur : pouls ROUGE rapide et vif (flash bref via flash_error, puis retour).
     "ERROR": [
-        (_LED_EFFECT, [_SOLID]),
+        (_LED_EFFECT, [_BREATH]),
         (_LED_COLOR, [_rgb(_ROUGE)]),
+        (_LED_SPEED, [_FAST]),
         (_LED_BRIGHTNESS, [_b(230)]),
     ],
-    # Enrôlement vocal : respiration BLANCHE douce.
+    # Enrôlement vocal : respiration BLANCHE douce (cérémonie calme).
     "ENROLLING": [
         (_LED_EFFECT, [_BREATH]),
         (_LED_COLOR, [_rgb(_BLANC)]),
@@ -163,6 +169,9 @@ _STATE_WRITES = {
         (_LED_BRIGHTNESS, [_b(140)]),
     ],
 }
+
+# Sentinelle interne : flash d'erreur (appliqué ~1.5 s puis retour à l'état courant).
+_ERROR_FLASH = "_ERROR_FLASH"
 
 # Auto-test visuel au démarrage (XVF_LED_TEST=1) : cycle TOUS les états ~2 s
 # chacun pour valider couleurs/effets d'un coup, sans piloter l'assistant.
@@ -234,6 +243,16 @@ class XvfLedRing:
         except Exception:
             pass
 
+    def flash_error(self):
+        """Flash d'erreur : pouls rouge ~1.5 s puis retour à l'état courant.
+        Appelé avec les bips d'échec de l'orchestrateur (fins de tour anormales)."""
+        if not self.available:
+            return
+        try:
+            self._q.put_nowait(_ERROR_FLASH)
+        except Exception:
+            pass
+
     def close(self):
         """Arrêt propre : stoppe le worker et restaure l'effet doa (défaut usine)."""
         if not self.available:
@@ -258,6 +277,11 @@ class XvfLedRing:
 
     # ── Worker (thread dédié) ───────────────────────────────────────────
     def _run(self):
+        # Correction gamma à l'init (teintes fidèles) — cosmétique : échec ignoré.
+        try:
+            self._write(*_LED_GAMMIFY, [1])
+        except Exception:
+            pass
         if _SELF_TEST:
             import time as _t
             logger.info("[xvf-led] AUTO-TEST : cycle de tous les états (~2 s chacun) — "
@@ -287,6 +311,13 @@ class XvfLedRing:
                 state = nxt
             if self._stop or not self.available:
                 break
+            if state == _ERROR_FLASH:
+                # Pouls rouge bref, puis retour au DERNIER état demandé (le flash
+                # ne doit jamais rester : une erreur est un événement, pas un état).
+                self._apply("ERROR")
+                time.sleep(1.5)
+                self._applied = None
+                state = self._last_requested if self._last_requested in _STATE_WRITES else "IDLE"
             if state == self._applied:
                 continue                             # déjà affiché → rien à écrire
             self._apply(state)

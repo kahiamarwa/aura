@@ -403,6 +403,10 @@ class Orchestrator:
         depuis le thread principal (jamais depuis le thread feed) — play_beep = Popen aplay
         fire-and-forget, même chemin sonore que le TTS."""
         play_beep(freq=300.0, dur=0.25)
+        try:
+            self.ring.flash_error()      # pouls rouge ~1.5 s (double signal son+lumière)
+        except Exception:
+            pass
 
     # ── Chemin B : flux STREAMING (Deepgram Flux décide la fin de tour) ──
     def _handle_command_streaming(self, frames, from_conversing: bool = False,
