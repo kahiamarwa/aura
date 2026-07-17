@@ -63,13 +63,12 @@ _LED_DOA_COLOR = (20, 17, "uint32")  # 2×uint32 : couleur de base + couleur du 
 # Ids d'effet
 _OFF, _BREATH, _RAINBOW, _SOLID, _DOA, _RING = 0, 1, 2, 3, 4, 5
 
-# Vitesses breath (échelle NON documentée par XMOS — empirique). Terrain 16/07 :
-# la valeur 10 « vibrait » (respiration trop nerveuse) → défaut abaissé, et
-# réglable par env sans toucher au code : XVF_LED_SPEED_SLOW / XVF_LED_SPEED_FAST.
-# Si la respiration reste trop rapide, essayer 1-2 ; si elle devient trop lente,
-# l'échelle est inversée → essayer 50-80.
-_SLOW = int(os.getenv("XVF_LED_SPEED_SLOW", "3"))
-_FAST = int(os.getenv("XVF_LED_SPEED_FAST", "25"))
+# Vitesses (échelle non documentée par XMOS). DÉCOUVERTE terrain 17/07 : la
+# vitesse n'est LATCHÉE qu'au DÉMARRAGE de l'effet → il faut écrire la vitesse
+# AVANT, puis redémarrer l'effet (off→on) — c'est ce que fait _apply. Valeur
+# validée à l'œil : 1 = respiration calme parfaite. Réglable par env.
+_SLOW = int(os.getenv("XVF_LED_SPEED_SLOW", "1"))
+_FAST = int(os.getenv("XVF_LED_SPEED_FAST", "10"))
 
 # Luminosité : multiplicateur global réglable (XVF_LED_BRIGHTNESS_SCALE=1.5 =
 # +50 % partout, plafonné 255). Terrain 16/07 : la veille à 60 était trop faible.
@@ -111,62 +110,73 @@ _DOA_BASE = 0x101008   # halo de fond sombre en mode doa
 # état n'est plus bleu comme l'orbe web — la rotation prime sur la fidélité teinte.
 
 # ── État Aura → séquence d'écritures ──
-# Ordre : EFFET D'ABORD, puis couleur/vitesse/luminosité — c'est l'ordre de
-# l'exemple OFFICIEL (host_control/README : led_effect puis led_color/speed/
-# brightness). Terrain 16/07 : avec l'ordre inverse (couleur avant effet),
-# certaines couleurs ne prenaient pas (tout restait orange) — le firmware
-# applique visiblement la couleur au mode ACTIF.
+# RECETTE (terrain 16-17/07, réconcilie les deux observations) :
+#   1. PARAMÈTRES d'abord (couleur/vitesse/luminosité) ;
+#   2. puis REDÉMARRAGE de l'effet (off → effet cible) : la VITESSE n'est
+#      latchée qu'au démarrage de l'effet (écrite après, elle est ignorée —
+#      d'où la respiration d'usine « qui vibre » qu'on n'arrivait pas à calmer).
+#      La couleur, elle, survit au redémarrage (validé à l'œil : off→on garde
+#      l'ambre). Le off→on ajoute ~1 écriture par changement d'état — toujours
+#      borné (changements d'état seulement, jamais de boucle).
 _STATE_WRITES = {
-    # Repos : respiration ambre douce et lente, discrète (~40 %).
+    # Repos : respiration ambre douce et LENTE (vitesse 1 validée), discrète.
     "IDLE": [
-        (_LED_EFFECT, [_BREATH]),
         (_LED_COLOR, [_rgb(_AMBRE)]),
         (_LED_SPEED, [_SLOW]),
         (_LED_BRIGHTNESS, [_b(100)]),
+        (_LED_EFFECT, [_OFF]),
+        (_LED_EFFECT, [_BREATH]),
     ],
-    # Écoute : halo DoA — pointeur VERT qui suit le locuteur, très lumineux (~85 %).
+    # Écoute : halo DoA — pointeur VERT qui suit le locuteur, très lumineux.
     "LISTENING": [
-        (_LED_EFFECT, [_DOA]),
         (_LED_DOA_COLOR, [_rgb(_DOA_BASE), _rgb(_VERT)]),
         (_LED_BRIGHTNESS, [_b(220)]),
+        (_LED_EFFECT, [_OFF]),
+        (_LED_EFFECT, [_DOA]),
     ],
     # Réflexion : ROTATION arc-en-ciel native (« ça tourne = ça travaille »).
     "THINKING": [
-        (_LED_EFFECT, [_RAINBOW]),
         (_LED_SPEED, [_FAST]),
         (_LED_BRIGHTNESS, [_b(160)]),
+        (_LED_EFFECT, [_OFF]),
+        (_LED_EFFECT, [_RAINBOW]),
     ],
     # Parole : VIOLET plein FIXE (flux sortant, stable).
     "SPEAKING": [
-        (_LED_EFFECT, [_SOLID]),
         (_LED_COLOR, [_rgb(_VIOLET)]),
         (_LED_BRIGHTNESS, [_b(150)]),
+        (_LED_EFFECT, [_OFF]),
+        (_LED_EFFECT, [_SOLID]),
     ],
     # Suivi : halo DoA — pointeur CYAN doux (« à toi, tu peux enchaîner »).
     "CONVERSING": [
-        (_LED_EFFECT, [_DOA]),
         (_LED_DOA_COLOR, [_rgb(_DOA_BASE), _rgb(_CYAN)]),
         (_LED_BRIGHTNESS, [_b(140)]),
+        (_LED_EFFECT, [_OFF]),
+        (_LED_EFFECT, [_DOA]),
     ],
     # Micro coupé : ROUGE FIXE immobile (contrat : rien ne bouge = rien n'écoute).
     "MUTED": [
-        (_LED_EFFECT, [_SOLID]),
         (_LED_COLOR, [_rgb(_ROUGE)]),
         (_LED_BRIGHTNESS, [_b(100)]),
+        (_LED_EFFECT, [_OFF]),
+        (_LED_EFFECT, [_SOLID]),
     ],
     # Erreur : pouls ROUGE rapide et vif (flash bref via flash_error, puis retour).
     "ERROR": [
-        (_LED_EFFECT, [_BREATH]),
         (_LED_COLOR, [_rgb(_ROUGE)]),
         (_LED_SPEED, [_FAST]),
         (_LED_BRIGHTNESS, [_b(230)]),
-    ],
-    # Enrôlement vocal : respiration BLANCHE douce (cérémonie calme).
-    "ENROLLING": [
+        (_LED_EFFECT, [_OFF]),
         (_LED_EFFECT, [_BREATH]),
+    ],
+    # Enrôlement vocal : respiration BLANCHE douce (même calme que la veille).
+    "ENROLLING": [
         (_LED_COLOR, [_rgb(_BLANC)]),
         (_LED_SPEED, [_SLOW]),
         (_LED_BRIGHTNESS, [_b(140)]),
+        (_LED_EFFECT, [_OFF]),
+        (_LED_EFFECT, [_BREATH]),
     ],
 }
 
