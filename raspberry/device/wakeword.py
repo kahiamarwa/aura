@@ -24,7 +24,19 @@ logger = logging.getLogger(__name__)
 
 class WakeWord:
     def __init__(self):
-        models = [str(config.OPENWAKE_DIR / config.ACTIVATE_MODEL)]
+        # Ensemble : tous les modèles activate existants (ACTIVATE_MODELS) — le
+        # frontend openWakeWord est partagé, chaque tête ONNX de plus est ~gratuite.
+        models = []
+        for m in config.ACTIVATE_MODELS:
+            path = config.OPENWAKE_DIR / m
+            if path.exists():
+                models.append(str(path))
+            else:
+                logger.warning("[WakeWord] modèle activate absent, ignoré : %s", path)
+        if not models:
+            raise FileNotFoundError(
+                f"aucun modèle activate trouvé dans {config.OPENWAKE_DIR} "
+                f"(ACTIVATE_MODELS={config.ACTIVATE_MODELS})")
         interrupt_path = config.OPENWAKE_DIR / config.INTERRUPT_MODEL
         if interrupt_path.exists():
             models.append(str(interrupt_path))

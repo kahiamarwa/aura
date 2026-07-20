@@ -126,6 +126,14 @@ PLAYBACK_ALSA_DEVICE = (AEC_ALSA_DEVICE if AEC_ENABLED
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 OPENWAKE_DIR = Path(os.getenv("OPENWAKE_DIR", _REPO_ROOT / "openwake"))
 ACTIVATE_MODEL = os.getenv("ACTIVATE_MODEL", "Aura_test.onnx")  # "Dis Aura"
+# Ensemble (v3, 19/07) : ACTIVATE_MODELS="Aura_test.onnx,Aura_test_v3e.onnx" charge
+# PLUSIEURS modèles activate — openWakeWord partage le frontend melspec/embedding,
+# un modèle de plus ne coûte que sa tête DNN (~négligeable). L'un OU l'autre
+# au-dessus de son seuil déclenche. Banc 19/07 : v2 seul 84 %, v3e seule 80 %,
+# UNION 92 % @0.5 avec 0 fausse alerte (ils ratent des prises différentes).
+# Sans ACTIVATE_MODELS : comportement historique (ACTIVATE_MODEL seul).
+ACTIVATE_MODELS = [m.strip() for m in
+                   os.getenv("ACTIVATE_MODELS", ACTIVATE_MODEL).split(",") if m.strip()]
 INTERRUPT_MODEL = os.getenv("INTERRUPT_MODEL", "stop_aura.onnx")  # "Stop Aura"
 WAKE_THRESHOLDS = {
     # 0.35 (était 0.4) : télémétrie wake_events du 06-07/07 — 7 tentatives réelles
@@ -134,7 +142,9 @@ WAKE_THRESHOLDS = {
     # le Pi). Le gate _wake_is_owner est OFF par défaut (WAKE_SPEAKER_GATE=0 → il retourne
     # True inconditionnellement, il ne filtre RIEN) : ne PAS justifier ce seuil bas par lui
     # (défense fantôme). Ré-évaluer 0.35 si on désactive la vérif turn_end.
-    Path(ACTIVATE_MODEL).stem: float(os.getenv("ACTIVATE_THRESHOLD", "0.35")),
+    # Le même seuil s'applique à chaque modèle activate de l'ensemble.
+    **{Path(m).stem: float(os.getenv("ACTIVATE_THRESHOLD", "0.35"))
+       for m in ACTIVATE_MODELS},
     # 0.85 : n'est EFFECTIF qu'en IDLE, où le résultat « interrupt » est de toute façon
     # ignoré (rien à stopper). Tous les états actifs le SUPPLANTENT par un override
     # contextuel : capture/CONVERSING → STOP_CAPTURE_THRESHOLD (0.5), lecture →
