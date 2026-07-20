@@ -54,6 +54,9 @@ class WakeWord:
         # que chaque événement soit horodaté avec le contexte. _log_min : plancher des
         # near-miss journalisés (calibration terrain sans avoir à activer WAKE_DEBUG).
         self.state_hint = "IDLE"
+        # Dernier déclenchement (modèle+score) — lu par l'orchestrateur pour nommer
+        # les fichiers de récolte terrain (WAKE_SAVE_AUDIO).
+        self.last_trigger: dict | None = None
         self._events: list = []
         self._events_lock = threading.Lock()
         self._log_min = float(os.getenv("WAKE_LOG_MIN", "0.10"))
@@ -90,6 +93,7 @@ class WakeWord:
 
     def _emit(self, name: str, score: float, now: float) -> str:
         self._last[name] = now
+        self.last_trigger = {"model": name, "score": float(score)}
         # Vide le buffer glissant d'openWakeWord : sinon le résidu audio du mot de
         # réveil re-déclenche au process() suivant (re-trigger observé au test terrain).
         try:

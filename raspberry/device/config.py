@@ -142,9 +142,15 @@ WAKE_THRESHOLDS = {
     # le Pi). Le gate _wake_is_owner est OFF par défaut (WAKE_SPEAKER_GATE=0 → il retourne
     # True inconditionnellement, il ne filtre RIEN) : ne PAS justifier ce seuil bas par lui
     # (défense fantôme). Ré-évaluer 0.35 si on désactive la vérif turn_end.
-    # Le même seuil s'applique à chaque modèle activate de l'ensemble.
-    **{Path(m).stem: float(os.getenv("ACTIVATE_THRESHOLD", "0.35"))
-       for m in ACTIVATE_MODELS},
+    # Seuil PAR MODÈLE (optionnel) : ACTIVATE_THRESHOLDS="0.5,0.99" aligné sur
+    # ACTIVATE_MODELS — permet le mode OMBRE d'un candidat (seuil ≥ 1 : visible
+    # dans la télémétrie near-miss, incapable de déclencher) et le tuning A/B
+    # sans toucher le modèle de prod. Sinon ACTIVATE_THRESHOLD pour tous.
+    **{Path(m).stem: float(_t) if _t else float(os.getenv("ACTIVATE_THRESHOLD", "0.35"))
+       for m, _t in zip(
+           ACTIVATE_MODELS,
+           ([t.strip() for t in os.getenv("ACTIVATE_THRESHOLDS", "").split(",")]
+            + [""] * len(ACTIVATE_MODELS))[:len(ACTIVATE_MODELS)])},
     # 0.85 : n'est EFFECTIF qu'en IDLE, où le résultat « interrupt » est de toute façon
     # ignoré (rien à stopper). Tous les états actifs le SUPPLANTENT par un override
     # contextuel : capture/CONVERSING → STOP_CAPTURE_THRESHOLD (0.5), lecture →
@@ -163,6 +169,14 @@ WAKE_DEBUG = os.getenv("WAKE_DEBUG", "0") == "1"
 # tout le monde (comme Alexa) et on mise sur le traitement du bruit. WAKE_SPEAKER_GATE=1 pour réactiver.
 WAKE_SPEAKER_GATE = os.getenv("WAKE_SPEAKER_GATE", "0") == "1"
 WAKE_COOLDOWN_S = 1.5
+# ── Récolte terrain (A/B) : archive l'audio (~1.5 s) de CHAQUE déclenchement
+# activate en IDLE, modèle+score dans le nom de fichier. Un faux réveil terrain
+# devient ainsi un négatif dur prêt pour build_real_negatives (features
+# streaming). Plafond avec rotation pour ne jamais remplir la carte SD.
+WAKE_SAVE_AUDIO = os.getenv("WAKE_SAVE_AUDIO", "0") == "1"
+WAKE_SAVE_AUDIO_DIR = Path(os.getenv("WAKE_SAVE_AUDIO_DIR",
+                                     str(Path.home() / "wake_fp")))
+WAKE_SAVE_AUDIO_MAX = int(os.getenv("WAKE_SAVE_AUDIO_MAX", "200"))
 
 # ── Silero VAD (détection de parole robuste, modèle ONNX) ────────────
 # silero_vad.onnx est téléchargé par openwakeword (download_models()).

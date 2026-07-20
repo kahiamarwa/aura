@@ -258,6 +258,33 @@ class Orchestrator:
         logger.info("[endpoint] commande capturée : %.1fs envoyés au cloud", len(pcm) / sr)
         return pcm
 
+    # ── Récolte terrain : archive l'audio de chaque déclenchement (A/B) ──
+    def _save_wake_audio(self, recent: np.ndarray) -> None:
+        """WAKE_SAVE_AUDIO=1 : sauve l'audio (~1.5 s) du réveil, modèle+score dans
+        le nom. Un faux réveil terrain = un négatif dur prêt pour la prochaine
+        itération du modèle (build_real_negatives, features streaming). Rotation
+        au plafond WAKE_SAVE_AUDIO_MAX (carte SD). Jamais bloquant : best-effort."""
+        if not config.WAKE_SAVE_AUDIO or recent.size == 0:
+            return
+        try:
+            import wave
+            d = config.WAKE_SAVE_AUDIO_DIR
+            d.mkdir(parents=True, exist_ok=True)
+            existing = sorted(d.glob("wake_*.wav"))
+            if len(existing) >= config.WAKE_SAVE_AUDIO_MAX:
+                existing[0].unlink()                      # rotation : le plus ancien saute
+            t = self.wake.last_trigger or {}
+            name = (f"wake_{time.strftime('%Y%m%d_%H%M%S')}_"
+                    f"{t.get('model', 'inconnu')}_s{int(round(t.get('score', 0) * 100)):03d}.wav")
+            with wave.open(str(d / name), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(config.SAMPLE_RATE)
+                w.writeframes(recent.tobytes())
+            logger.info("[wake-save] %s (%.1fs)", name, recent.size / config.SAMPLE_RATE)
+        except Exception as e:
+            logger.warning("[wake-save] échec: %s", e)
+
     # ── Le mot de réveil vient-il bien de l'utilisateur enrôlé ? ─────
     def _wake_is_owner(self, audio: np.ndarray) -> bool:
         """Anti faux-déclenchement : on n'active que pour la voix enrôlée.
@@ -968,9 +995,11 @@ class Orchestrator:
                     self.ambient.feed(frame)          # contexte ambiant
                     recent = np.concatenate([recent, frame])[-recent_max:]
                     # « Dis Aura » n'active QUE si c'est ta voix (anti faux-déclenchement)
-                    if self.wake.process(frame) == "activate" and self._wake_is_owner(recent):
-                        from_conversing = False
-                        self._set_state("LISTENING")
+                    if self.wake.process(frame) == "activate":
+                        self._save_wake_audio(recent)   # récolte terrain (avant tout gate)
+                        if self._wake_is_owner(recent):
+                            from_conversing = False
+                            self._set_state("LISTENING")
 
                 elif self.state == "LISTENING":
                     # Départ du budget d'hésitation (WAKE_PATIENCE_S) : posé à la 1re entrée
