@@ -947,8 +947,11 @@ class Orchestrator:
             conv_turns = 0      # plafond de tours en CONVERSING (anti-boucle)
             listen_started = 0.0    # début de la session d'écoute courante (budget d'hésitation)
             rearm_silent = False    # la prochaine entrée LISTENING est un ré-armement invisible
-            recent = np.zeros(0, dtype=np.int16)        # ~1.5s pour le speaker-gate
-            recent_max = int(1.5 * config.SAMPLE_RATE)
+            # 3.0 s (était 1.5) : sert au speaker-gate ET à la récolte terrain
+            # (WAKE_SAVE_AUDIO) — la fenêtre du modèle wake demande ~2 s d'audio,
+            # 3 s donnent le contexte streaming complet sans padding au training.
+            recent = np.zeros(0, dtype=np.int16)
+            recent_max = int(3.0 * config.SAMPLE_RATE)
             while True:
                 # ── Mode confidentiel : micro COUPÉ (rien n'est envoyé au cloud) ──
                 if self._muted.is_set():
