@@ -59,16 +59,25 @@ _LED_GAMMIFY = (20, 14, "uint8")     # correction gamma (teintes fidèles) — �
 _LED_SPEED = (20, 15, "uint8")       # vitesse breath/rainbow (échelle définie par la puce)
 _LED_COLOR = (20, 16, "uint32")      # couleur breath / solid
 _LED_DOA_COLOR = (20, 17, "uint32")  # 2×uint32 : couleur de base + couleur du pointeur DoA
+_LED_RING = (20, 19, "uint32")       # 12×uint32 : une couleur PAR LED (fw ≥ 2.0.7) —
+                                     # validé terrain 24/07 via sonde USB brute (le CLI
+                                     # Seeed ne connaît pas cette commande, le fw si)
 
 # Ids d'effet
 _OFF, _BREATH, _RAINBOW, _SOLID, _DOA, _RING = 0, 1, 2, 3, 4, 5
 
 # Vitesses (échelle non documentée par XMOS). DÉCOUVERTE terrain 17/07 : la
 # vitesse n'est LATCHÉE qu'au DÉMARRAGE de l'effet → il faut écrire la vitesse
-# AVANT, puis redémarrer l'effet (off→on) — c'est ce que fait _apply. Valeur
-# validée à l'œil : 1 = respiration calme parfaite. Réglable par env.
+# AVANT, puis redémarrer l'effet (off→on) — c'est ce que fait _apply. Valeurs
+# validées à l'œil : 1 = respiration calme (veille), 2 = pulsé posé (réponse,
+# terrain 24/07 : 6 était trop rapide). Réglables par env.
 _SLOW = int(os.getenv("XVF_LED_SPEED_SLOW", "1"))
+_MED = int(os.getenv("XVF_LED_SPEED_MED", "2"))
 _FAST = int(os.getenv("XVF_LED_SPEED_FAST", "10"))
+
+# Chenillard THINKING (idée + réglage utilisateur, terrain 24/07) : un pas
+# toutes les 150 ms = ~1.8 s par tour, comète 1 LED pleine + 2 LED de traîne.
+_CHASE_STEP_S = float(os.getenv("XVF_LED_CHASE_STEP_S", "0.15"))
 
 # Luminosité : multiplicateur global réglable (XVF_LED_BRIGHTNESS_SCALE=1.5 =
 # +50 % partout, plafonné 255). Terrain 16/07 : la veille à 60 était trop faible.
@@ -94,20 +103,20 @@ def _rgb(c: int) -> int:
     # return ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF)
 
 
-# Palette — couleurs CORRIGÉES POUR LE RENDU WS2812 (≠ hex écran : sur LED, la
-# faible part de vert du 0xE36B2B virait au rouge « sanguin » — terrain 17/07).
-# Langage : couleur = QUEL état ; mouvement = ce qu'Aura FAIT (lent=veille,
-# rotation=travail, directionnel=attention, fixe=certitude, rouge immobile=mute).
-_AMBRE = 0xFF8C00      # IDLE — ambre VRAI sur LED (repos)
-_VERT = 0x00FF40       # LISTENING — pointeur DoA qui suit le locuteur
-_VIOLET = 0xA030FF     # SPEAKING — Aura parle (fixe)
-_CYAN = 0x00C8FF       # CONVERSING — fenêtre de suivi (pointeur DoA doux)
-_ROUGE = 0xFF0000      # MUTED (fixe immobile = rien n'écoute) / ERROR (pouls bref)
+# Palette VoiceNode (document de design Hallia 07/26, validée LED par LED à
+# l'œil le 24/07). Langage : couleur = QUEL état ; mouvement = ce qu'Aura FAIT
+# (respiration lente=veille, directionnel=attention, rotation=travail,
+# pulsé=parole, rouge immobile=mute).
+_BLEU = 0x3D8BFD       # VEILLE (respiration lente) + pointeur DoA d'écoute
+_VERT = 0x2FD573       # ÉCOUTE (base) / RÉPONSE (respiration posée) / pointeur suivi
+_ORANGE = 0xFFA02E     # RÉFLEXION — comète du chenillard
+_TRAINE = 0x201404     # RÉFLEXION — traîne sombre de la comète (2 LED)
+_ROUGE = 0xF0433A      # MUTED (fixe immobile = rien n'écoute) / ERROR (pouls bref)
 _BLANC = 0xB0B0B0      # ENROLLING — cérémonie neutre
-_DOA_BASE = 0x101008   # halo de fond sombre en mode doa
-# THINKING = rotation arc-en-ciel NATIVE (rainbow) : le « spinner » universel du
-# « ça travaille », animé par la puce (zéro écriture Pi). Compromis assumé : cet
-# état n'est plus bleu comme l'orbe web — la rotation prime sur la fidélité teinte.
+# THINKING = CHENILLARD logiciel (idée utilisateur 24/07) : mode ring (une
+# couleur par LED) + rotation d'une comète orange pilotée par le worker
+# (~6.7 écritures/s pendant la réflexion seulement — période courte et bornée,
+# validé fluide à l'œil ; le rainbow natif est abandonné : couleurs figées fw).
 
 # ── État Aura → séquence d'écritures ──
 # RECETTE (terrain 16-17/07, réconcilie les deux observations) :
@@ -119,38 +128,42 @@ _DOA_BASE = 0x101008   # halo de fond sombre en mode doa
 #      l'ambre). Le off→on ajoute ~1 écriture par changement d'état — toujours
 #      borné (changements d'état seulement, jamais de boucle).
 _STATE_WRITES = {
-    # Repos : respiration ambre douce et LENTE (vitesse 1 validée), discrète.
+    # Veille : respiration BLEUE douce et LENTE (vitesse 1), discrète (20-30 %).
     "IDLE": [
-        (_LED_COLOR, [_rgb(_AMBRE)]),
+        (_LED_COLOR, [_rgb(_BLEU)]),
         (_LED_SPEED, [_SLOW]),
         (_LED_BRIGHTNESS, [_b(100)]),
         (_LED_EFFECT, [_OFF]),
         (_LED_EFFECT, [_BREATH]),
     ],
-    # Écoute : halo DoA — pointeur VERT qui suit le locuteur, très lumineux.
+    # Écoute : DoA bicolore (choix utilisateur 24/07, combo « C ») — anneau
+    # VERT plein (« j'écoute ») + pointeur BLEU qui suit le locuteur (« toi »).
     "LISTENING": [
-        (_LED_DOA_COLOR, [_rgb(_DOA_BASE), _rgb(_VERT)]),
+        (_LED_DOA_COLOR, [_rgb(_VERT), _rgb(_BLEU)]),
         (_LED_BRIGHTNESS, [_b(220)]),
         (_LED_EFFECT, [_OFF]),
         (_LED_EFFECT, [_DOA]),
     ],
-    # Réflexion : ROTATION arc-en-ciel native (« ça tourne = ça travaille »).
+    # Réflexion : CHENILLARD orange (mode ring) — les frames sont écrites par le
+    # worker (_chase_step) tant que l'état reste THINKING.
     "THINKING": [
-        (_LED_SPEED, [_FAST]),
         (_LED_BRIGHTNESS, [_b(160)]),
         (_LED_EFFECT, [_OFF]),
-        (_LED_EFFECT, [_RAINBOW]),
+        (_LED_EFFECT, [_RING]),
     ],
-    # Parole : VIOLET plein FIXE (flux sortant, stable).
+    # Réponse : respiration VERTE posée (vitesse 2 validée 24/07 — « pulsé »
+    # du document, le firmware ne permettant pas la modulation par la voix).
     "SPEAKING": [
-        (_LED_COLOR, [_rgb(_VIOLET)]),
+        (_LED_COLOR, [_rgb(_VERT)]),
+        (_LED_SPEED, [_MED]),
         (_LED_BRIGHTNESS, [_b(150)]),
         (_LED_EFFECT, [_OFF]),
-        (_LED_EFFECT, [_SOLID]),
+        (_LED_EFFECT, [_BREATH]),
     ],
-    # Suivi : halo DoA — pointeur CYAN doux (« à toi, tu peux enchaîner »).
+    # Suivi : miroir de l'écoute — anneau BLEU (repos actif) + pointeur VERT
+    # (« je te suis encore, tu peux enchaîner »).
     "CONVERSING": [
-        (_LED_DOA_COLOR, [_rgb(_DOA_BASE), _rgb(_CYAN)]),
+        (_LED_DOA_COLOR, [_rgb(_BLEU), _rgb(_VERT)]),
         (_LED_BRIGHTNESS, [_b(140)]),
         (_LED_EFFECT, [_OFF]),
         (_LED_EFFECT, [_DOA]),
@@ -207,6 +220,7 @@ class XvfLedRing:
         self._last_requested = None   # dédup à l'ENFILEMENT (changement d'état)
         self._applied = None          # dernier état RÉELLEMENT écrit
         self._fails = 0               # échecs d'écriture consécutifs
+        self._chase_i = 0             # position de la comète du chenillard THINKING
         self._stop = False
 
         if not enabled:
@@ -295,17 +309,33 @@ class XvfLedRing:
         if _SELF_TEST:
             import time as _t
             logger.info("[xvf-led] AUTO-TEST : cycle de tous les états (~2 s chacun) — "
-                        "IDLE ambre, LISTENING vert(DoA), THINKING bleu, SPEAKING violet, "
-                        "CONVERSING cyan(DoA), MUTED rouge, ENROLLING blanc")
+                        "IDLE bleu respirant, LISTENING vert+pointeur bleu (DoA), "
+                        "THINKING chenillard orange, SPEAKING vert pulsé, "
+                        "CONVERSING bleu+pointeur vert (DoA), MUTED rouge, ENROLLING blanc")
             for st in ("IDLE", "LISTENING", "THINKING", "SPEAKING",
                        "CONVERSING", "MUTED", "ENROLLING"):
                 if self._stop or not self.available:
                     break
                 self._apply(st)
-                _t.sleep(2.0)
+                if st == "THINKING":          # l'auto-test montre la comète en mouvement
+                    for _ in range(13):
+                        self._chase_step()
+                        _t.sleep(_CHASE_STEP_S)
+                else:
+                    _t.sleep(2.0)
             self._applied = None      # force la réécriture de l'état réel ensuite
         while True:
-            state = self._q.get()
+            # CHENILLARD : tant que l'état affiché est THINKING, on avance la
+            # comète toutes les _CHASE_STEP_S en guettant un nouvel état (le
+            # get(timeout) sert de métronome — aucune écriture hors THINKING).
+            if self._applied == "THINKING" and not self._stop:
+                try:
+                    state = self._q.get(timeout=_CHASE_STEP_S)
+                except queue.Empty:
+                    self._chase_step()
+                    continue
+            else:
+                state = self._q.get()
             if state is _STOP or self._stop:
                 break
             # latest-wins : on vide la file et ne garde que le DERNIER état
@@ -332,10 +362,32 @@ class XvfLedRing:
                 continue                             # déjà affiché → rien à écrire
             self._apply(state)
 
+    def _chase_step(self):
+        """Une frame du chenillard THINKING : comète orange (1 pleine + 2 de
+        traîne) qui avance d'une LED. Recette utilisateur 24/07 (sonde validée
+        à l'œil). Mêmes garde-fous d'échec que _apply."""
+        cols = []
+        for k in range(12):
+            d = (k - self._chase_i) % 12
+            cols.append(_rgb(_ORANGE) if d == 0 else (_rgb(_TRAINE) if d <= 2 else 0))
+        try:
+            self._write(*_LED_RING, cols)
+            self._fails = 0
+            self._chase_i = (self._chase_i + 1) % 12
+        except Exception as e:
+            self._fails += 1
+            logger.debug("[xvf-led] chenillard : écriture échouée (%d/%d) : %s",
+                         self._fails, _MAX_FAILS, e)
+            if self._fails >= _MAX_FAILS:
+                self.available = False
+                logger.warning("[xvf-led] %d échecs consécutifs → anneau désactivé", _MAX_FAILS)
+
     def _apply(self, state: str):
         writes = _STATE_WRITES.get(state)
         if not writes:
             return
+        if state == "THINKING":
+            self._chase_i = 0        # la comète repart toujours de la LED 0
         for (resid, cmdid, dtype), values in writes:
             if not self.available:
                 return
@@ -353,6 +405,8 @@ class XvfLedRing:
                                    _MAX_FAILS)
                 return                               # abandonne les écritures restantes
         self._applied = state
+        if state == "THINKING" and self.available:
+            self._chase_step()                       # première frame sans attendre le métronome
 
     # ── Transfert de contrôle vendor (réplique de ReSpeaker.write de xvf_host.py) ──
     def _write(self, resid: int, cmdid: int, dtype: str, values):
