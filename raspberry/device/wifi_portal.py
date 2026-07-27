@@ -77,10 +77,12 @@ def say(name: str):
     if dev:
         cmd += ["-D", dev]
     try:
-        subprocess.run(cmd + [str(wav)], timeout=30,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r = subprocess.run(cmd + [str(wav)], timeout=30, capture_output=True, text=True)
+        if r.returncode != 0:                        # ne JAMAIS avaler un échec audio
+            logger.warning("aplay %s (dev=%s) rc=%d : %s",
+                           name, dev or "défaut", r.returncode, (r.stderr or "").strip()[:120])
     except Exception as e:
-        logger.warning("aplay: %s", e)
+        logger.warning("aplay %s (dev=%s): %s", name, dev or "défaut", e)
 
 
 def has_connectivity() -> bool:
@@ -140,17 +142,36 @@ def stop_ap():
 
 def try_connect(ssid: str, password: str) -> bool:
     """Coupe l'AP, tente le réseau cible, attend l'Internet réel. Échec → purge
-    le profil (sinon NetworkManager le retente en boucle à chaque boot)."""
+    le profil (sinon NetworkManager le retente en boucle à chaque boot).
+
+    Robustesse (terrain 27/07 : « connecté au 3e essai ») : en mode AP la radio
+    ne scanne plus → le cache est PÉRIMÉ à l'extinction de l'AP et le connect
+    peut ne pas « voir » le SSID cible. On force donc un rescan + 3 tentatives
+    pour les échecs de visibilité/timing ; un échec d'AUTHENTIFICATION (mauvais
+    mot de passe), lui, est définitif — inutile de retenter."""
     stop_ap()
-    args = ["device", "wifi", "connect", ssid]
-    if password:
-        args += ["password", password]
-    r = _nmcli(*args, timeout=CONNECT_TIMEOUT_S)
-    if r.returncode == 0:
-        for _ in range(10):                          # DHCP + route + DNS : jusqu'à 20 s
-            time.sleep(2)
-            if has_connectivity():
-                return True
+    time.sleep(2)                                    # la radio quitte le mode AP
+    last_err = ""
+    for attempt in range(1, 4):
+        _nmcli("device", "wifi", "rescan", timeout=20)
+        time.sleep(4)                                # le scan peuple le cache
+        args = ["device", "wifi", "connect", ssid]
+        if password:
+            args += ["password", password]
+        r = _nmcli(*args, timeout=CONNECT_TIMEOUT_S)
+        if r.returncode == 0:
+            for _ in range(15):                      # DHCP + route + DNS : jusqu'à 30 s
+                time.sleep(2)
+                if has_connectivity():
+                    logger.info("connecté à « %s » (essai %d)", ssid, attempt)
+                    return True
+            last_err = "associé mais pas d'Internet (captif entreprise ? DNS ?)"
+        else:
+            last_err = (r.stderr or r.stdout).strip()
+        logger.warning("connect « %s » essai %d/3 : %s", ssid, attempt, last_err)
+        low = last_err.lower()
+        if "secrets" in low or "password" in low or "802.1x" in low:
+            break                                    # mauvais mot de passe → définitif
     _nmcli("connection", "delete", ssid)
     return False
 
