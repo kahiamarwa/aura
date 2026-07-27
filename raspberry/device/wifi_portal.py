@@ -117,6 +117,28 @@ def scan_networks() -> list[dict]:
     return sorted(seen.values(), key=lambda e: -e["signal"])
 
 
+_REJECT_RULE = ["FORWARD", "-i", IFACE, "-j", "REJECT",
+                "--reject-with", "icmp-port-unreachable"]
+
+
+def _captive_fastpath(enable: bool):
+    """REJECT (et non DROP silencieux) du trafic sortant des clients de l'AP.
+
+    Terrain 27/07 : la page mettait 5-15 s à s'afficher. Cause : le téléphone
+    teste son DNS chiffré (DoH/DoT), ses push, ses requêtes HTTPS — ces paquets
+    partent vers le Pi (passerelle sans uplink) qui les JETTE en silence → le
+    téléphone attend des timeouts avant de conclure « portail captif ». Avec un
+    REJECT, il reçoit « injoignable » en quelques ms → ses sondes convergent
+    immédiatement vers notre page. Réglage standard des portails captifs pros.
+    (Le trafic VERS le Pi — DNS piégé + page :80 — passe par INPUT : intact.)"""
+    action = "-I" if enable else "-D"
+    try:
+        subprocess.run(["iptables", action, *_REJECT_RULE], capture_output=True,
+                       text=True, timeout=10)
+    except Exception as e:
+        logger.warning("iptables %s: %s", action, e)
+
+
 def start_ap():
     """AP OUVERT (sans mot de passe — c'est un portail d'accueil, pas un réseau).
     ⚠️ Ne PAS utiliser `nmcli device wifi hotspot` : sans mot de passe fourni,
@@ -132,10 +154,12 @@ def start_ap():
     r = _nmcli("connection", "up", AP_CON, timeout=30)
     if r.returncode != 0:
         raise RuntimeError(f"ap up: {r.stderr.strip()}")
+    _captive_fastpath(True)
     logger.info("AP ouvert « %s » actif (%s)", AP_SSID, AP_IP)
 
 
 def stop_ap():
+    _captive_fastpath(False)
     _nmcli("connection", "down", AP_CON)
     _nmcli("connection", "delete", AP_CON)
 
@@ -451,12 +475,16 @@ def run_portal_once() -> bool:
     t.start()
     try:
         last_prompt = time.time()
+        last_conn_check = 0.0
         while not _Portal.result:
             time.sleep(1)
-            # câble Ethernet branché entre-temps → sortie immédiate
-            if has_connectivity():
-                say("portal_ok")
-                return True
+            # câble Ethernet branché entre-temps → sortie (check toutes les 5 s :
+            # marteler nmcli chaque seconde chargeait NetworkManager pour rien)
+            if time.time() - last_conn_check > 5:
+                last_conn_check = time.time()
+                if has_connectivity():
+                    say("portal_ok")
+                    return True
             if time.time() - last_prompt > 300:      # rappel vocal toutes les 5 min
                 say("portal_start")
                 last_prompt = time.time()
