@@ -140,24 +140,54 @@ def stop_ap():
     _nmcli("connection", "delete", AP_CON)
 
 
-def try_connect(ssid: str, password: str) -> bool:
-    """Coupe l'AP, tente le réseau cible, attend l'Internet réel. Échec → purge
-    le profil (sinon NetworkManager le retente en boucle à chaque boot).
+def _wait_device_free(timeout_s: int = 15) -> bool:
+    """Attend que l'interface soit sortie du mode AP (état disconnected/available).
+    Terrain 27/07 : après l'extinction de l'AP, la radio met plusieurs secondes à
+    redevenir cliente — un connect lancé trop tôt échoue SYSTÉMATIQUEMENT (d'où
+    le motif « 1re tentative échoue, 2e marche »). On attend l'ÉTAT, pas un délai."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        r = _nmcli("-t", "-f", "DEVICE,STATE", "device", "status", timeout=10)
+        for line in r.stdout.splitlines():
+            parts = line.split(":")
+            if parts[0] == IFACE and len(parts) > 1:
+                if parts[1] in ("disconnected", "connecting", "connected"):
+                    return True
+        time.sleep(0.5)
+    return False
 
-    Robustesse (terrain 27/07 : « connecté au 3e essai ») : en mode AP la radio
-    ne scanne plus → le cache est PÉRIMÉ à l'extinction de l'AP et le connect
-    peut ne pas « voir » le SSID cible. On force donc un rescan + 3 tentatives
-    pour les échecs de visibilité/timing ; un échec d'AUTHENTIFICATION (mauvais
-    mot de passe), lui, est définitif — inutile de retenter."""
+
+def _wait_ssid_visible(ssid: str, timeout_s: int = 25) -> bool:
+    """Rescanne jusqu'à ce que le SSID cible apparaisse réellement dans le scan
+    (le cache est vide/périmé au sortir du mode AP ; les premiers rescan peuvent
+    être refusés par la radio — on insiste jusqu'à VOIR le réseau)."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        _nmcli("device", "wifi", "rescan", timeout=20)   # échec toléré (radio occupée)
+        time.sleep(2.5)
+        r = _nmcli("-t", "-f", "SSID", "device", "wifi", "list", timeout=20)
+        if ssid in [l.strip() for l in r.stdout.splitlines()]:
+            return True
+    return False
+
+
+def try_connect(ssid: str, password: str) -> bool:
+    """Coupe l'AP, attend les ÉTATS réels (radio libre → SSID visible), se
+    connecte, attend l'Internet réel. Échec → purge du profil (sinon
+    NetworkManager le retente en boucle à chaque boot)."""
     stop_ap()
-    time.sleep(2)                                    # la radio quitte le mode AP
+    if not _wait_device_free():
+        logger.warning("l'interface %s tarde à quitter le mode AP", IFACE)
+    visible = _wait_ssid_visible(ssid)
+    if not visible:
+        logger.info("« %s » invisible au scan → tentative en réseau masqué", ssid)
     last_err = ""
-    for attempt in range(1, 4):
-        _nmcli("device", "wifi", "rescan", timeout=20)
-        time.sleep(4)                                # le scan peuple le cache
+    for attempt in range(1, 3):
         args = ["device", "wifi", "connect", ssid]
         if password:
             args += ["password", password]
+        if not visible:
+            args += ["hidden", "yes"]                # SSID masqué (ou hors de portée)
         r = _nmcli(*args, timeout=CONNECT_TIMEOUT_S)
         if r.returncode == 0:
             for _ in range(15):                      # DHCP + route + DNS : jusqu'à 30 s
@@ -168,10 +198,11 @@ def try_connect(ssid: str, password: str) -> bool:
             last_err = "associé mais pas d'Internet (captif entreprise ? DNS ?)"
         else:
             last_err = (r.stderr or r.stdout).strip()
-        logger.warning("connect « %s » essai %d/3 : %s", ssid, attempt, last_err)
+        logger.warning("connect « %s » essai %d/2 : %s", ssid, attempt, last_err)
         low = last_err.lower()
         if "secrets" in low or "password" in low or "802.1x" in low:
             break                                    # mauvais mot de passe → définitif
+        time.sleep(3)
     _nmcli("connection", "delete", ssid)
     return False
 
