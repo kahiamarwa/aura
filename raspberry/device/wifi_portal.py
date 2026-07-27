@@ -200,6 +200,25 @@ def try_connect(ssid: str, password: str) -> bool:
             last_err = (r.stderr or r.stdout).strip()
         logger.warning("connect « %s » essai %d/2 : %s", ssid, attempt, last_err)
         low = last_err.lower()
+        if "key-mgmt" in low and password:
+            # Cache de scan encore vide → nmcli ne peut pas DEVINER le chiffrement
+            # (terrain 27/07 : « 802-11-wireless-security.key-mgmt: property is
+            # missing » ×3). Repli : profil EXPLICITE wpa-psk, zéro devinette.
+            logger.info("repli profil explicite wpa-psk pour « %s »", ssid)
+            _nmcli("connection", "delete", ssid)
+            add = _nmcli("connection", "add", "type", "wifi", "ifname", IFACE,
+                         "con-name", ssid, "ssid", ssid,
+                         "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password)
+            if add.returncode == 0:
+                up = _nmcli("connection", "up", ssid, timeout=CONNECT_TIMEOUT_S)
+                if up.returncode == 0:
+                    for _ in range(15):
+                        time.sleep(2)
+                        if has_connectivity():
+                            logger.info("connecté à « %s » (profil explicite)", ssid)
+                            return True
+                last_err = (up.stderr or up.stdout).strip()
+            logger.warning("profil explicite « %s » : %s", ssid, last_err)
         if "secrets" in low or "password" in low or "802.1x" in low:
             break                                    # mauvais mot de passe → définitif
         time.sleep(3)
