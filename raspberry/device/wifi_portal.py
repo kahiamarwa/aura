@@ -116,12 +116,21 @@ def scan_networks() -> list[dict]:
 
 
 def start_ap():
+    """AP OUVERT (sans mot de passe — c'est un portail d'accueil, pas un réseau).
+    ⚠️ Ne PAS utiliser `nmcli device wifi hotspot` : sans mot de passe fourni,
+    il en GÉNÈRE un aléatoire (terrain 27/07 : le téléphone en demandait un).
+    La création explicite sans bloc de sécurité donne un vrai réseau ouvert."""
     _nmcli("connection", "delete", AP_CON)          # idempotent (échec ignoré)
-    r = _nmcli("device", "wifi", "hotspot", "ifname", IFACE,
-               "con-name", AP_CON, "ssid", AP_SSID)
+    r = _nmcli("connection", "add", "type", "wifi", "ifname", IFACE,
+               "con-name", AP_CON, "autoconnect", "no", "ssid", AP_SSID,
+               "802-11-wireless.mode", "ap", "802-11-wireless.band", "bg",
+               "ipv4.method", "shared")
     if r.returncode != 0:
-        raise RuntimeError(f"hotspot: {r.stderr.strip()}")
-    logger.info("AP « %s » actif (%s)", AP_SSID, AP_IP)
+        raise RuntimeError(f"ap add: {r.stderr.strip()}")
+    r = _nmcli("connection", "up", AP_CON, timeout=30)
+    if r.returncode != 0:
+        raise RuntimeError(f"ap up: {r.stderr.strip()}")
+    logger.info("AP ouvert « %s » actif (%s)", AP_SSID, AP_IP)
 
 
 def stop_ap():
