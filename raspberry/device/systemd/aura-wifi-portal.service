@@ -1,0 +1,20 @@
+# Portail captif Wi-Fi d'Aura — provisioning réseau plug-and-play.
+# Service INDÉPENDANT de l'orchestrateur (doit marcher même si Aura est plantée).
+# Installation :
+#   sudo cp raspberry/device/systemd/aura-wifi-portal.service /etc/systemd/system/
+#   sudo cp raspberry/device/systemd/aura-captive-dns.conf /etc/NetworkManager/dnsmasq-shared.d/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now aura-wifi-portal
+[Unit]
+Description=Aura - portail captif Wi-Fi (Aura-Config)
+After=NetworkManager.service sound.target
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+# root : nmcli hotspot + port 80. Python système (stdlib uniquement, pas le venv).
+ExecStart=/usr/bin/python3 /home/pi/aura/raspberry/device/wifi_portal.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
