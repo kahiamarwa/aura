@@ -177,55 +177,168 @@ def try_connect(ssid: str, password: str) -> bool:
 
 
 # ── serveur HTTP du portail ──────────────────────────────────────────
+# Design system Aura (Phase 11) : orange #C2410C sur crème, polices système
+# (AUCUNE ressource externe : le téléphone est sur un AP SANS Internet).
 _PAGE = """<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>Aura — Configuration Wi-Fi</title><style>
-body{{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;background:#FAF5EF;color:#1F1B16;
-margin:0;padding:24px;display:flex;justify-content:center}}
-main{{max-width:420px;width:100%}}
-h1{{color:#C2410C;font-size:26px;margin:18px 0 6px}}
-p{{color:#6B5D4F;font-size:15px;line-height:1.5}}
-.net{{display:flex;align-items:center;gap:10px;width:100%;padding:14px 16px;margin:8px 0;
-border:1px solid #E7DDD1;border-radius:12px;background:#fff;font-size:16px;cursor:pointer}}
-.net:active{{background:#FFF3EA}}
-.sig{{margin-left:auto;color:#6B5D4F;font-size:13px}}
-input{{width:100%;box-sizing:border-box;padding:14px;margin:8px 0;border:1px solid #E7DDD1;
-border-radius:12px;font-size:16px;background:#fff}}
-button{{width:100%;padding:15px;margin-top:10px;border:0;border-radius:12px;background:#C2410C;
-color:#fff;font-size:17px;font-weight:600}}
-.badge{{display:inline-block;background:#FFF3EA;color:#C2410C;border-radius:20px;
-padding:4px 12px;font-size:13px;font-weight:600}}
-</style></head><body><main>
-<span class="badge">● Aura</span>
-<h1>{title}</h1>
-{body}
-</main></body></html>"""
+:root{--brand:#C2410C;--brand-soft:#FFF3EA;--ink:#1F1B16;--muted:#6B5D4F;
+--line:#E7DDD1;--bg:#FAF5EF;--card:#FFFFFF;--ok:#1A7F4B}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+background:var(--bg);color:var(--ink);min-height:100vh;display:flex;flex-direction:column;
+align-items:center;padding:20px 16px 32px;-webkit-font-smoothing:antialiased}
+header{display:flex;align-items:center;gap:12px;width:100%;max-width:430px;padding:4px 2px 18px}
+.orb{width:38px;height:38px;border-radius:50%;flex-shrink:0;
+background:radial-gradient(circle at 32% 28%,#FFB27A 0%,#E36B2B 45%,var(--brand) 100%);
+box-shadow:0 2px 10px rgba(194,65,12,.35)}
+.brand{font-size:21px;font-weight:700;letter-spacing:-.02em}
+.brand small{display:block;font-size:12px;font-weight:400;color:var(--muted);letter-spacing:0}
+main{width:100%;max-width:430px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;
+padding:22px 20px;box-shadow:0 1px 4px rgba(31,27,22,.05)}
+h1{font-size:22px;letter-spacing:-.01em;margin-bottom:6px}
+.sub{color:var(--muted);font-size:14.5px;line-height:1.5;margin-bottom:16px}
+.nets{display:flex;flex-direction:column;gap:8px;margin-bottom:4px}
+.net{display:flex;align-items:center;gap:12px;width:100%;padding:14px;text-align:left;
+border:1.5px solid var(--line);border-radius:13px;background:var(--card);font-size:16px;
+font-weight:500;cursor:pointer;transition:border-color .15s,background .15s}
+.net.sel{border-color:var(--brand);background:var(--brand-soft)}
+.net .lock{color:var(--muted);flex-shrink:0;display:flex}
+.bars{margin-left:auto;display:flex;align-items:flex-end;gap:2px;height:16px;flex-shrink:0}
+.bars i{width:4px;border-radius:2px;background:var(--line)}
+.bars i:nth-child(1){height:5px}.bars i:nth-child(2){height:8px}
+.bars i:nth-child(3){height:12px}.bars i:nth-child(4){height:16px}
+.bars.s1 i:nth-child(-n+1),.bars.s2 i:nth-child(-n+2),
+.bars.s3 i:nth-child(-n+3),.bars.s4 i{background:var(--ok)}
+#panel{display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
+#panel.open{display:block}
+label{display:block;font-size:13.5px;font-weight:600;color:var(--muted);margin:0 0 6px 2px}
+.pwrow{position:relative}
+input{width:100%;padding:15px 52px 15px 14px;border:1.5px solid var(--line);border-radius:13px;
+font-size:17px;background:var(--card);color:var(--ink)}
+input:focus{outline:none;border-color:var(--brand)}
+.eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);border:0;background:none;
+padding:10px;color:var(--muted);cursor:pointer;font-size:13.5px;font-weight:600}
+.hint{font-size:12.5px;color:var(--muted);margin:6px 2px 0}
+.go{width:100%;padding:16px;margin-top:16px;border:0;border-radius:13px;background:var(--brand);
+color:#fff;font-size:17px;font-weight:600;cursor:pointer}
+.go:disabled{opacity:.55}
+details{margin-top:14px}
+summary{font-size:13.5px;color:var(--muted);cursor:pointer}
+details input{margin-top:8px;padding-right:14px}
+.steps{display:flex;flex-direction:column;gap:14px;margin-top:14px}
+.step{display:flex;gap:12px;align-items:flex-start;font-size:15px;line-height:1.45}
+.step .n{width:24px;height:24px;border-radius:50%;background:var(--brand-soft);color:var(--brand);
+font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.spin{width:22px;height:22px;border:3px solid var(--brand-soft);border-top-color:var(--brand);
+border-radius:50%;animation:r 1s linear infinite;flex-shrink:0}
+@keyframes r{to{transform:rotate(360deg)}}
+footer{margin-top:auto;padding-top:22px;font-size:12px;color:var(--muted)}
+@media(prefers-reduced-motion:reduce){.spin{animation:none}}
+</style></head><body>
+<header><div class="orb"></div><div class="brand">Aura<small>Assistant vocal — Hallia</small></div></header>
+<main><div class="card">__BODY__</div></main>
+<footer>Aura par Hallia · configuration locale sécurisée</footer>
+</body></html>"""
+
+_LOCK_SVG = ('<svg class="lock" width="15" height="15" viewBox="0 0 24 24" fill="none" '
+             'stroke="currentColor" stroke-width="2.2"><rect x="4" y="10" width="16" height="11" '
+             'rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>')
+
+
+def _bars(signal: int) -> str:
+    level = 1 + min(3, signal // 25)                 # 0-100 % → 1-4 barres
+    return f'<span class="bars s{level}"><i></i><i></i><i></i><i></i></span>'
 
 
 def _page_home(networks: list[dict]) -> str:
     items = "".join(
-        f'<div class="net" onclick="pick(\'{html.escape(n["ssid"], quote=True)}\',{int(n["secured"])})">'
-        f'{"🔒 " if n["secured"] else "🔓 "}{html.escape(n["ssid"])}'
-        f'<span class="sig">{n["signal"]} %</span></div>'
-        for n in networks) or "<p><i>Aucun réseau détecté — utilisez le champ manuel.</i></p>"
+        '<button type="button" class="net" '
+        f'''onclick="pick(this,'{html.escape(n["ssid"], quote=True)}',{int(n["secured"])})">'''
+        f'{_LOCK_SVG if n["secured"] else ""}'
+        f'<span>{html.escape(n["ssid"])}</span>{_bars(n["signal"])}</button>'
+        for n in networks) or ('<p class="sub">Aucun réseau détecté pour l\'instant — '
+                               'utilisez « Réseau masqué » ci-dessous.</p>')
     body = f"""
-<p>Choisissez le réseau Wi-Fi de votre entreprise :</p>{items}
+<h1>Connecter votre enceinte</h1>
+<p class="sub">Choisissez le réseau Wi-Fi de votre entreprise. Aura s'y connectera
+et vous confirmera à voix haute.</p>
 <form method="post" action="/connect" id="f">
-  <input name="ssid" id="ssid" placeholder="Nom du réseau (SSID)" required>
-  <input name="password" id="pw" type="password" placeholder="Mot de passe (vide si réseau ouvert)">
-  <button>Connecter Aura</button>
+  <div class="nets" id="nets">{items}</div>
+  <input type="hidden" name="ssid" id="ssid">
+  <div id="panel">
+    <label id="pwlabel" for="pw">Mot de passe du réseau</label>
+    <div class="pwrow">
+      <input name="password" id="pw" type="password" autocomplete="off"
+             autocapitalize="none" autocorrect="off" spellcheck="false"
+             placeholder="Mot de passe">
+      <button type="button" class="eye" id="eye" onclick="toggle()"
+              aria-label="Afficher le mot de passe">Afficher</button>
+    </div>
+    <p class="hint">Vérifiez le mot de passe avec « Afficher » avant de valider —
+    attention aux majuscules automatiques du téléphone.</p>
+    <button class="go" id="go">Connecter Aura</button>
+  </div>
+  <details>
+    <summary>Réseau masqué ou absent de la liste ?</summary>
+    <input id="manual" placeholder="Nom exact du réseau (SSID)" autocapitalize="none"
+           autocorrect="off" spellcheck="false" oninput="manualPick(this.value)">
+  </details>
 </form>
-<script>function pick(s,sec){{document.getElementById('ssid').value=s;
-document.getElementById('pw').focus();window.scrollTo(0,document.body.scrollHeight);}}</script>"""
-    return _PAGE.format(title="Connectons votre enceinte", body=body)
+<script>
+var sec=1, pick;
+function toggle(){{
+  var p=document.getElementById('pw'),e=document.getElementById('eye');
+  var show=p.type==='password';p.type=show?'text':'password';
+  e.textContent=show?'Masquer':'Afficher';
+}}
+pick=function(el,ssid,secured){{
+  document.querySelectorAll('.net').forEach(function(n){{n.classList.remove('sel')}});
+  if(el)el.classList.add('sel');
+  document.getElementById('ssid').value=ssid;
+  sec=secured;
+  var panel=document.getElementById('panel');
+  panel.classList.add('open');
+  document.getElementById('pwlabel').textContent=
+    secured?('Mot de passe de « '+ssid+' »'):'Réseau ouvert — aucun mot de passe requis';
+  document.getElementById('pw').style.display=secured?'':'none';
+  document.getElementById('eye').style.display=secured?'':'none';
+  if(secured)document.getElementById('pw').focus();
+  panel.scrollIntoView({{behavior:'smooth',block:'end'}});
+}};
+function manualPick(v){{
+  document.querySelectorAll('.net').forEach(function(n){{n.classList.remove('sel')}});
+  document.getElementById('ssid').value=v.trim();
+  var panel=document.getElementById('panel');
+  if(v.trim()){{panel.classList.add('open');
+    document.getElementById('pwlabel').textContent='Mot de passe de « '+v.trim()+' » (vide si réseau ouvert)';
+    document.getElementById('pw').style.display='';
+    document.getElementById('eye').style.display='';
+  }} else panel.classList.remove('open');
+}}
+document.getElementById('f').addEventListener('submit',function(ev){{
+  if(!document.getElementById('ssid').value){{ev.preventDefault();return;}}
+  var b=document.getElementById('go');b.disabled=true;b.textContent='Connexion en cours…';
+}});
+</script>"""
+    return _PAGE.replace("__BODY__", body)
 
 
 def _page_bye(ssid: str) -> str:
-    body = (f"<p>Aura se connecte à « <b>{html.escape(ssid)}</b> »…</p>"
-            "<p><b>Le résultat vous sera annoncé à voix haute par l'enceinte.</b></p>"
-            "<p>Si la connexion échoue, le réseau <b>Aura-Config</b> réapparaîtra "
-            "dans une minute pour réessayer.</p>")
-    return _PAGE.format(title="Connexion en cours…", body=body)
+    body = f"""
+<h1>Connexion en cours</h1>
+<div class="steps">
+  <div class="step"><div class="spin"></div>
+    <div>Aura se connecte à «&nbsp;<b>{html.escape(ssid)}</b>&nbsp;»…</div></div>
+  <div class="step"><div class="n">🔊</div>
+    <div><b>Le résultat vous sera annoncé à voix haute</b> par l'enceinte
+    dans quelques secondes.</div></div>
+  <div class="step"><div class="n">↺</div>
+    <div>En cas d'échec, le réseau <b>Aura-Config</b> réapparaîtra
+    automatiquement pour réessayer.</div></div>
+</div>"""
+    return _PAGE.replace("__BODY__", body)
 
 
 class _Portal(BaseHTTPRequestHandler):
@@ -261,8 +374,9 @@ class _Portal(BaseHTTPRequestHandler):
         ssid = (form.get("ssid") or [""])[0].strip()
         password = (form.get("password") or [""])[0]
         if not ssid or not re.match(r"^[^\x00-\x1f]{1,32}$", ssid):
-            self._send(400, _PAGE.format(title="Nom de réseau invalide",
-                                         body="<p><a href='/'>Retour</a></p>"))
+            self._send(400, _PAGE.replace(
+                "__BODY__", "<h1>Nom de réseau invalide</h1>"
+                            "<p class='sub'><a href='/'>← Retour à la liste</a></p>"))
             return
         self._send(200, _page_bye(ssid))
         _Portal.result = {"ssid": ssid, "password": password}
