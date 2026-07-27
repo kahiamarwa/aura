@@ -204,21 +204,27 @@ def try_connect(ssid: str, password: str) -> bool:
             # Cache de scan encore vide → nmcli ne peut pas DEVINER le chiffrement
             # (terrain 27/07 : « 802-11-wireless-security.key-mgmt: property is
             # missing » ×3). Repli : profil EXPLICITE wpa-psk, zéro devinette.
-            logger.info("repli profil explicite wpa-psk pour « %s »", ssid)
-            _nmcli("connection", "delete", ssid)
-            add = _nmcli("connection", "add", "type", "wifi", "ifname", IFACE,
-                         "con-name", ssid, "ssid", ssid,
-                         "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password)
-            if add.returncode == 0:
+            # wpa-psk d'abord (WPA2 + mixte WPA2/WPA3 = ~95 % du parc), puis
+            # sae (WPA3 pur, routeurs récents stricts).
+            for key_mgmt in ("wpa-psk", "sae"):
+                logger.info("repli profil explicite %s pour « %s »", key_mgmt, ssid)
+                _nmcli("connection", "delete", ssid)
+                add = _nmcli("connection", "add", "type", "wifi", "ifname", IFACE,
+                             "con-name", ssid, "ssid", ssid,
+                             "wifi-sec.key-mgmt", key_mgmt, "wifi-sec.psk", password)
+                if add.returncode != 0:
+                    last_err = (add.stderr or add.stdout).strip()
+                    continue
                 up = _nmcli("connection", "up", ssid, timeout=CONNECT_TIMEOUT_S)
                 if up.returncode == 0:
                     for _ in range(15):
                         time.sleep(2)
                         if has_connectivity():
-                            logger.info("connecté à « %s » (profil explicite)", ssid)
+                            logger.info("connecté à « %s » (profil explicite %s)",
+                                        ssid, key_mgmt)
                             return True
                 last_err = (up.stderr or up.stdout).strip()
-            logger.warning("profil explicite « %s » : %s", ssid, last_err)
+                logger.warning("profil explicite %s « %s » : %s", key_mgmt, ssid, last_err)
         if "secrets" in low or "password" in low or "802.1x" in low:
             break                                    # mauvais mot de passe → définitif
         time.sleep(3)
