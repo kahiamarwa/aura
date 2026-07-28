@@ -185,23 +185,78 @@ def get_mute_state() -> bool:
     True → le device doit COUPER micro + ambiant (rien n'est envoyé au cloud).
     Réseau injoignable → False (on ne bloque pas le device sur une erreur réseau).
     """
-    return bool(get_control().get("muted"))
+    return bool((get_control() or {}).get("muted"))
 
 
-def get_control() -> dict:
+def get_control() -> dict | None:
     """Lit le contrôle distant (mute + demande d'enrôlement) en UN poll.
-    Renvoie {"muted": bool, "enroll_request": dict|None}. Réseau KO → tout neutre."""
-    neutral = {"muted": False, "enroll_request": None}
+    Renvoie {"muted", "enroll_request", "unclaimed", "command", "channel"} —
+    ou **None si le poll a ÉCHOUÉ** (réseau/HTTP). ⚠️ Revue 27/07 (critique) :
+    renvoyer un neutre {"unclaimed": False} sur une erreur réseau faisait
+    croire à une enceinte stock qu'elle venait d'être associée (faux accueil
+    + pipeline sans compte). Un échec doit être DISTINGUABLE : l'appelant ne
+    change RIEN tant qu'il n'a pas une réponse authentique du backend."""
     if not (config.DEVICE_TOKEN or get_access_token()):
-        return neutral
+        return None
     try:
-        r = _state_client.get(_url("/api/device/control"), headers=_headers())
+        hdrs = _headers()
+        v = _device_version()
+        if v:
+            hdrs["X-Device-Version"] = v       # remontée flotte (chantier 5)
+        r = _state_client.get(_url("/api/device/control"), headers=hdrs)
         if r.status_code == 200:
             d = r.json()
-            return {"muted": bool(d.get("muted")), "enroll_request": d.get("enroll_request")}
+            return {"muted": bool(d.get("muted")), "enroll_request": d.get("enroll_request"),
+                    "unclaimed": bool(d.get("unclaimed")), "command": d.get("command"),
+                    "channel": d.get("channel")}
     except Exception:
         pass
-    return neutral
+    return None
+
+
+_version_cache: str | None = None
+
+
+def _device_version() -> str:
+    """Version logicielle de l'enceinte (~/.aura/version, écrit par update_agent).
+    Cachée : lue une fois par process (change seulement via update+restart)."""
+    global _version_cache
+    if _version_cache is None:
+        try:
+            from pathlib import Path
+            _version_cache = (Path.home() / ".aura" / "version").read_text().strip()[:40]
+        except Exception:
+            _version_cache = "dev"
+    return _version_cache
+
+
+def send_logs(lines: int = 200) -> bool:
+    """Téléverse le journal du service (ordre à distance `send_logs`).
+    journalctl -u aura : nécessite pi ∈ groupe systemd-journal (image golden)."""
+    import subprocess
+    try:
+        r = subprocess.run(["journalctl", "-u", "aura", "-n", str(lines), "--no-pager"],
+                           capture_output=True, text=True, timeout=20)
+        content = r.stdout or r.stderr or "(journal vide)"
+        resp = _state_client.post(_url("/api/device/logs"), headers=_headers(),
+                                  json={"logs": content[-65536:]}, timeout=30)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def get_claim_announcement() -> bytes | None:
+    """MP3 de la cérémonie d'association (« votre code est B… 7… K… »).
+    Généré par le backend (TTS) — l'enceinte stock a Internet mais pas de compte,
+    c'est le seul endpoint audio qui lui répond. None si réseau/HTTP KO."""
+    try:
+        r = _state_client.get(_url("/api/device/claim-announcement"),
+                              headers=_headers(), timeout=30)
+        if r.status_code == 200 and r.content:
+            return r.content
+    except Exception:
+        pass
+    return None
 
 
 def get_enroll_prompt(name: str) -> bytes | None:
