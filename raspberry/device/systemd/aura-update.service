@@ -7,19 +7,20 @@
 # (on n'enable QUE le .timer — le .service n'a volontairement pas de [Install] :
 #  il ne doit jamais se lancer tout seul au boot, uniquement sur déclenchement.)
 [Unit]
-Description=Aura - agent de mise à jour (tags git du canal stable/beta)
-# git fetch a besoin d'un réseau RÉEL (network.target ne garantit rien).
+Description=Aura - agent de mise à jour (paquets signés du VPS, canal stable/beta)
+# Le manifeste + le téléchargement ont besoin d'un réseau RÉEL.
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 # oneshot : l'agent fait sa passe et se termine — pas un démon.
 Type=oneshot
-# root OBLIGATOIRE : systemctl restart aura (+ rollback). Les commandes git et
-# pip sont RE-DÉLÉGUÉES à l'utilisateur pi par l'agent lui-même (runuser) pour
-# ne jamais semer de fichiers root dans le dépôt ni dans le venv de pi.
-# python3 SYSTÈME (stdlib uniquement) : l'agent doit pouvoir réparer un venv
-# cassé, il ne peut donc pas en dépendre.
+# root OBLIGATOIRE : systemctl restart aura + contrôle de santé + rollback.
+# L'agent télécharge un paquet SIGNÉ du VPS (auth DEVICE_TOKEN), vérifie sha256
+# + signature Ed25519 avec la clé publique embarquée, puis bascule le code
+# (le venv, à un chemin fixe, n'est jamais remplacé). Aucun credential GitHub
+# sur le Pi. python3 SYSTÈME (stdlib + openssl) : l'agent doit pouvoir réparer
+# un venv cassé, il ne dépend donc pas du venv.
 ExecStart=/usr/bin/python3 /home/pi/aura/raspberry/device/update_agent.py
 # Marge large : contrôle de santé (120 s + 30 s d'observation) + éventuel
 # rollback avec le même contrôle + pip install sur un lien lent.
