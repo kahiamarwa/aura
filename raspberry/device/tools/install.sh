@@ -61,7 +61,9 @@ ok "aura-captive-dns.conf"
 if grep -q '^DEVICE_TOKEN=' "$ENV_FILE" 2>/dev/null && [ ! -f "$IDENTITY_MARKER" ]; then
   warn "DEVICE_TOKEN déjà présent → enceinte existante : je pose le marqueur"
   warn "d'identité pour que firstboot ne génère PAS un nouveau token."
-  SER="$(grep '^AURA_SERIAL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2)"
+  # « || true » : grep sans correspondance (pas d'AURA_SERIAL) renvoie 1 et
+  # tuerait le script sous set -e. On veut juste la valeur si elle existe.
+  SER="$(grep '^AURA_SERIAL=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 || true)"
   echo "${SER:-AUR-EXIST}" > "$IDENTITY_MARKER"
   chown "$USER_NAME:$USER_NAME" "$IDENTITY_MARKER"
   ok "identité existante préservée (marqueur = ${SER:-AUR-EXIST})"
