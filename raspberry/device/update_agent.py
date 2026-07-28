@@ -35,7 +35,9 @@ logger = logging.getLogger("aura-update")
 # Hallia et n'est JAMAIS sur le Pi. (docs/FLEET-SECURITY.md)
 RELEASE_PUBKEY_HEX = "d020c1e8fa9a5a7e7d26af914958284f3c76cdcf6ddfe8d2f5c651d14ca313e8"
 
-HOME = Path(os.environ.get("AURA_HOME", str(Path.home())))
+# /home/pi en dur (pas Path.home()) : l'agent tourne en ROOT (systemd/sudo) où
+# Path.home()=/root — il doit lire l'env et écrire la version de l'utilisateur pi.
+HOME = Path(os.environ.get("AURA_HOME", "/home/pi"))
 ENV_FILE = HOME / ".aura" / "env"
 VERSION_FILE = HOME / ".aura" / "version"
 DEVICE_DIR = Path(os.environ.get("AURA_DEVICE_DIR", "/home/pi/aura/raspberry/device"))
