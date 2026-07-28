@@ -245,7 +245,20 @@ class Orchestrator:
         data = cloud.get_claim_announcement()
         if data:
             try:
-                self.player.play_mp3(data)
+                if data[:4] == b"RIFF":              # WAV (dictée assemblée) → aplay
+                    import subprocess
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                        f.write(data)
+                        tmp = f.name
+                    cmd = ["aplay", "-q"]
+                    if config.PLAYBACK_ALSA_DEVICE:
+                        cmd += ["-D", config.PLAYBACK_ALSA_DEVICE]
+                    subprocess.run(cmd + [tmp], timeout=90,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    os.unlink(tmp)
+                else:                                # MP3 (rétrocompat)
+                    self.player.play_mp3(data)
             except Exception as e:
                 logger.warning("[claim] lecture annonce KO: %s", e)
         else:
