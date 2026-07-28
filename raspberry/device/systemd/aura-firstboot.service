@@ -1,0 +1,36 @@
+# Identité premier boot — rend UNIQUE chaque clone de l'image golden
+# (DEVICE_TOKEN + serial AUR-XXXXX) puis l'enrôle au backend (ligne `stock`).
+# Installation :
+#   sudo cp raspberry/device/systemd/aura-firstboot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable aura-firstboot
+[Unit]
+Description=Aura - identite premier boot (DEVICE_TOKEN + serial + register)
+# Identité déjà établie → l'unité est un no-op TOTAL, évalué avant tout fork :
+# coût nul à chaque boot suivant. (Le script re-vérifie aussi le marqueur :
+# double sécurité si on le lance à la main.)
+ConditionPathExists=!/home/pi/.aura/.identity_done
+# Le POST /api/device/register exige un réseau RÉEL.
+Wants=network-online.target
+After=network-online.target
+# L'orchestrateur a besoin du DEVICE_TOKEN écrit dans ~/.aura/env → l'identité
+# passe d'abord. (Ordre déclaré ICI pour ne pas toucher aura.service ; si
+# l'enrôlement échoue — pas d'Internet — aura démarre quand même derrière et
+# le portail Wi-Fi prend la main, puis le retry ci-dessous finit le travail.)
+Before=aura.service
+
+[Service]
+Type=oneshot
+# pi : l'identité vit dans /home/pi/.aura — aucun privilège nécessaire.
+User=pi
+# python3 SYSTÈME (stdlib uniquement) : l'identité doit se créer même si le
+# venv de l'orchestrateur est cassé.
+ExecStart=/usr/bin/python3 /home/pi/aura/raspberry/device/tools/firstboot_identity.py
+# Échec réseau = exit 1 SANS marqueur → on réessaie sans se lasser : l'enceinte
+# finira par avoir Internet (portail Wi-Fi) et DOIT s'enrôler toute seule.
+# (Restart sur un oneshot : supporté depuis systemd 244 — Pi OS Bookworm = 252.)
+Restart=on-failure
+RestartSec=30
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,33 @@
+# Règles udev de l'array ReSpeaker XVF3800 (USB 2886:001a) — nommage audio
+# STABLE + permissions (plug-and-play chantier 3).
+# Installation :
+#   sudo cp raspberry/device/systemd/99-aura-alsa.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# ── Pourquoi il n'y a PAS de règle de renommage ALSA ici ─────────────────────
+# Les indices numériques (« plughw:2 », « plughw:3 ») DÉRIVENT selon l'ordre
+# d'énumération des cartes au boot : une image dupliquée sur des dizaines
+# d'enceintes casserait au hasard (jack HDMI présent ou non, ordre USB…).
+# Mais le kernel (snd-usb-audio) dérive déjà l'ID ALSA de la chaîne produit
+# USB : l'array apparaît comme « card N: Array [reSpeaker XVF3800 4-Mic
+# Array] » — l'ID « Array » est STABLE quel que soit le numéro N. Et forcer
+# ATTR{id} par udev sur de l'USB audio est notoirement peu fiable (la carte
+# est créée par le driver au probe, avant un passage déterministe des règles).
+# → La bonne pratique n'est donc PAS une règle de renommage, mais de référencer
+#   la carte PAR NOM dans ~/.aura/env (ce que firstboot_identity.py écrit) :
+#     AUDIO_OUTPUT_DEVICE=plughw:Array   # ALSA résout l'ID → plus d'indice
+#     AUDIO_INPUT_DEVICE=reSpeaker       # sounddevice matche par nom
+#   Les deux sont déjà supportés par device/config.py : toute valeur non
+#   numérique est transmise telle quelle (nom sounddevice pour la capture,
+#   device ALSA pour aplay/mpg123 en lecture).
+#
+# ── Règles réellement utiles (et suffisantes) ────────────────────────────────
+# 1) Accès non-root à l'interface de contrôle vendor (interface USB n°3) :
+#    indispensable pour « xvf_host REBOOT 1 » (contournement warm-reboot #20,
+#    lancé en User=pi par le ExecStartPre d'aura.service) et pour l'anneau LED
+#    piloté en pyusb (XVF_LED=1). Sans cette règle : sudo obligatoire partout.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2886", ATTRS{idProduct}=="001a", MODE="0666", GROUP="plugdev"
+# 2) Anti-autosuspend : l'économie d'énergie USB peut suspendre le device et
+#    couper les transferts isochrones → micro-coupures de capture aléatoires,
+#    voire « Input/output error » (manuel de référence §3.5/§4.1).
+SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="001a", ATTR{power/control}="on"

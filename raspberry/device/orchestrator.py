@@ -23,6 +23,10 @@ import threading
 
 import httpx
 import numpy as np
+from pathlib import Path
+
+# Annonces embarquées (accueil d'association, etc.) — générées voix produit.
+_HERE_ASSETS = Path(__file__).resolve().parent / "assets" / "voice"
 
 from . import config
 from .wakeword import WakeWord
@@ -65,6 +69,8 @@ class Orchestrator:
         self.last_transcript = ""        # dernière commande (pour l'affichage live)
         self._stop_watch = False
         self._muted = threading.Event()  # mode confidentiel (mute logiciel à distance)
+        self._unclaimed = threading.Event()  # plug-and-play : enceinte EN STOCK (pas de compte)
+        self._just_claimed = False       # transition stock→claimed : jouer l'accueil
         self._preroll = None             # audio du DÉBUT de commande (follow-up) à rejouer
         self._enroll_req = None          # demande d'enrôlement vocal poussée par le web
         self._enroll_seen_id = None      # id déjà traité (anti re-déclenchement pendant l'enrôlement)
@@ -139,23 +145,128 @@ class Orchestrator:
 
     # ── Poll du contrôle distant (mute + demande d'enrôlement, pilotés par le web) ──
     def _mute_poller(self):
-        """Interroge le cloud : mute ? demande d'enrôlement ? Met à jour event + flag.
-        Erreur réseau → on ne change rien (on ne mute/enrôle pas par accident)."""
+        """Interroge le cloud : mute ? demande d'enrôlement ? enceinte en stock ?
+        Met à jour events + flags. Erreur réseau → on ne change rien (on ne
+        mute/enrôle pas par accident)."""
         while not self._stop_watch:
             try:
                 ctrl = cloud.get_control()
+                if ctrl is None:
+                    # Poll ÉCHOUÉ (réseau/backend) → on ne change RIEN. Revue
+                    # 27/07 : traiter un échec comme « unclaimed=False » jouait
+                    # le faux accueil « je suis associée » sur un raté réseau.
+                    time.sleep(config.MUTE_POLL_S)
+                    continue
                 if ctrl.get("muted"):
                     self._muted.set()
                 else:
                     self._muted.clear()
+                # Plug-and-play : stock = pas de compte → cérémonie d'association
+                # (annonce vocale du code) au lieu du pipeline normal.
+                if ctrl.get("unclaimed"):
+                    self._unclaimed.set()
+                    if ctrl.get("announce_now"):
+                        # Bouton web « répéter / nouveau code » → annonce immédiate
+                        self._last_claim_announce = None
+                else:
+                    if self._unclaimed.is_set():
+                        self._just_claimed = True    # transition stock→claimed : accueil
+                    self._unclaimed.clear()
+                # Canal de MAJ poussé par le backend (chantier 4↔5) : persisté
+                # dans l'env pour l'update_agent (qui tourne hors process).
+                ch = ctrl.get("channel")
+                if ch in ("stable", "beta") and ch != getattr(self, "_channel_seen", None):
+                    self._channel_seen = ch
+                    self._persist_env_var("UPDATE_CHANNEL", ch)
                 req = ctrl.get("enroll_request")
                 # Dédup par id : la demande reste en base tant que l'upload n'a pas fini ;
                 # sans ça le poller la re-déclencherait en boucle pendant l'enrôlement.
                 if req and req.get("id") != self._enroll_seen_id and not self._muted.is_set():
                     self._enroll_req = req      # consommé dans run()
+                # ── Ordres à distance (chantier 5, one-shot côté backend) ──
+                cmd = ctrl.get("command")
+                if cmd:
+                    self._handle_remote_command(cmd)
             except Exception:
                 pass
             time.sleep(config.MUTE_POLL_S)
+
+    def _persist_env_var(self, key: str, value: str):
+        """Écrit/remplace une variable dans ~/.aura/env (atomique via fichier
+        temporaire). Sert au canal de MAJ poussé à distance."""
+        try:
+            env_path = Path.home() / ".aura" / "env"
+            lines = env_path.read_text().splitlines() if env_path.exists() else []
+            lines = [l for l in lines if not l.startswith(f"{key}=")]
+            lines.append(f"{key}={value}")
+            tmp = env_path.with_suffix(".tmp")
+            tmp.write_text("\n".join(lines) + "\n")
+            tmp.replace(env_path)
+            logger.info("[fleet] %s=%s persisté dans l'env", key, value)
+        except Exception as e:
+            logger.warning("[fleet] persistance env %s: %s", key, e)
+
+    def _handle_remote_command(self, cmd: str):
+        """Exécute un ordre du back-office. Design zéro-privilège :
+        - restart : sortie PROPRE du process → systemd (Restart=always) relance.
+          (Lancé à la main en dev : le process s'arrête, c'est voulu et loggué.)
+        - update  : démarre le service de MAJ (sudoers ciblé, cf. aura-sudoers).
+        - send_logs : téléverse le journal (diagnostic sans SSH)."""
+        import subprocess
+        logger.info("[fleet] ordre à distance reçu : %s", cmd)
+        if cmd == "restart":
+            self._set_state("IDLE")
+            logger.info("[fleet] redémarrage demandé → sortie propre (systemd relance)")
+            os._exit(0)
+        elif cmd == "update":
+            try:
+                subprocess.run(["sudo", "-n", "systemctl", "start", "--no-block", "aura-update.service"],
+                               timeout=15, capture_output=True)
+            except Exception as e:
+                logger.warning("[fleet] lancement update KO: %s", e)
+        elif cmd == "send_logs":
+            def _upload():
+                ok = cloud.send_logs()
+                logger.info("[fleet] journal téléversé : %s", "OK" if ok else "ÉCHEC")
+            threading.Thread(target=_upload, daemon=True, name="fleet-logs").start()
+        else:
+            logger.warning("[fleet] ordre inconnu ignoré : %r", cmd)
+
+    # ── Cérémonie d'association (plug-and-play, enceinte en stock) ──────
+    def _claim_ceremony_tick(self):
+        """Tant que l'enceinte n'appartient à personne : annonce le code
+        d'association (~toutes les 90 s), LED en respiration blanche, AUCUN
+        pipeline (pas de wake/STT/agent — il n'y a pas de compte à servir).
+        Appelé depuis la boucle principale quand _unclaimed est levé."""
+        now = time.monotonic()
+        last = getattr(self, "_last_claim_announce", None)
+        if last is not None and now - last < 90:
+            time.sleep(0.5)
+            return
+        self._last_claim_announce = now
+        self._set_state("ENROLLING")                 # respiration blanche = accueil
+        data = cloud.get_claim_announcement()
+        if data:
+            try:
+                if data[:4] == b"RIFF":              # WAV (dictée assemblée) → aplay
+                    import subprocess
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                        f.write(data)
+                        tmp = f.name
+                    cmd = ["aplay", "-q"]
+                    if config.PLAYBACK_ALSA_DEVICE:
+                        cmd += ["-D", config.PLAYBACK_ALSA_DEVICE]
+                    subprocess.run(cmd + [tmp], timeout=90,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    os.unlink(tmp)
+                else:                                # MP3 (rétrocompat)
+                    self.player.play_mp3(data)
+            except Exception as e:
+                logger.warning("[claim] lecture annonce KO: %s", e)
+        else:
+            logger.info("[claim] annonce indisponible (réseau ?) — nouvel essai dans 30 s")
+            self._last_claim_announce = now - 60     # ré-essaie dans ~30 s
 
     # ── LISTENING : enregistrement avec endpointing par locuteur cible ─
     def _record_command(self, frames, continuation: bool = False) -> np.ndarray | None:
@@ -968,6 +1079,29 @@ class Orchestrator:
                     continue
                 if self.state == "MUTED":            # sortie de mute → reprise
                     logger.info("[mute] 🟢 micro réactivé")
+                    self._set_state("IDLE")
+
+                # ── Plug-and-play : enceinte EN STOCK → cérémonie d'association ──
+                # Pas de compte = pas de pipeline (wake/STT/agent inutiles) : on
+                # annonce le code (~90 s) et on jette l'audio capté (rien n'est
+                # envoyé au cloud — la confidentialité d'un déballage chez un
+                # client n'attend pas l'association).
+                if self._unclaimed.is_set():
+                    if getattr(self, "mic", None):
+                        self.mic.flush()
+                    self._claim_ceremony_tick()
+                    from_conversing = False
+                    rearm_silent = False
+                    continue
+                if self._just_claimed:               # stock → claimed : accueil parlé
+                    self._just_claimed = False
+                    logger.info("[claim] 🎉 enceinte associée à un compte — accueil")
+                    try:
+                        welcome = _HERE_ASSETS / "claim_welcome.mp3"
+                        if welcome.exists():
+                            self.player.play_mp3(welcome.read_bytes())
+                    except Exception as e:
+                        logger.debug("[claim] accueil KO: %s", e)
                     self._set_state("IDLE")
 
                 # ── Enrôlement vocal demandé par le web (capture guidée par SON micro) ──

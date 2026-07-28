@@ -1,0 +1,7 @@
+# /etc/sudoers.d/aura — privilèges MINIMAUX de l'utilisateur pi pour la flotte.
+# Un seul ordre autorisé sans mot de passe : démarrer le service de mise à jour
+# (l'ordre à distance « update » du back-office). Rien d'autre — pas de
+# systemctl générique, pas de shell. Installé par la recette IMAGE-GOLDEN :
+#   sudo cp raspberry/device/systemd/aura-sudoers /etc/sudoers.d/aura
+#   sudo chmod 440 /etc/sudoers.d/aura
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl start aura-update.service

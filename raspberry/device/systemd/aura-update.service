@@ -1,0 +1,26 @@
+# MAJ de flotte Aura — unité DÉCLENCHÉE par aura-update.timer (quotidien) ou à
+# la main (« sudo systemctl start aura-update » = MAJ immédiate, utilisé aussi
+# par l'ordre à distance `update` du chantier 5).
+# Installation :
+#   sudo cp raspberry/device/systemd/aura-update.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now aura-update.timer
+# (on n'enable QUE le .timer — le .service n'a volontairement pas de [Install] :
+#  il ne doit jamais se lancer tout seul au boot, uniquement sur déclenchement.)
+[Unit]
+Description=Aura - agent de mise à jour (tags git du canal stable/beta)
+# git fetch a besoin d'un réseau RÉEL (network.target ne garantit rien).
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# oneshot : l'agent fait sa passe et se termine — pas un démon.
+Type=oneshot
+# root OBLIGATOIRE : systemctl restart aura (+ rollback). Les commandes git et
+# pip sont RE-DÉLÉGUÉES à l'utilisateur pi par l'agent lui-même (runuser) pour
+# ne jamais semer de fichiers root dans le dépôt ni dans le venv de pi.
+# python3 SYSTÈME (stdlib uniquement) : l'agent doit pouvoir réparer un venv
+# cassé, il ne peut donc pas en dépendre.
+ExecStart=/usr/bin/python3 /home/pi/aura/raspberry/device/update_agent.py
+# Marge large : contrôle de santé (120 s + 30 s d'observation) + éventuel
+# rollback avec le même contrôle + pip install sur un lien lent.
+TimeoutStartSec=20min

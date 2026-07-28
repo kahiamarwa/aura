@@ -1,0 +1,52 @@
+# Orchestrateur Aura en service systemd — l'enceinte démarre toute seule au
+# branchement, survit aux crashs et aux coupures de courant (chantier 3).
+# Installation :
+#   sudo cp raspberry/device/systemd/aura.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now aura
+[Unit]
+Description=Aura - orchestrateur enceinte (wake word + streaming cloud)
+# network-online (et PAS network) : l'orchestrateur ouvre un WebSocket vers le
+# backend dès le démarrage — network.target ne garantit AUCUNE connectivité
+# réelle (il dit juste « la pile réseau est là »). sound.target : les cartes
+# ALSA doivent être énumérées avant d'ouvrir la capture, sinon sounddevice ne
+# voit pas l'array au boot.
+After=network-online.target sound.target
+Wants=network-online.target sound.target
+
+[Service]
+Type=simple
+# pi (jamais root) : l'orchestrateur n'a besoin d'aucun privilège. L'accès USB
+# à l'array (xvf_host du ExecStartPre + anneau LED pyusb XVF_LED=1) est donné
+# par la règle udev 99-aura-alsa.rules (MODE 0666 sur 2886:001a), l'audio par
+# l'appartenance de pi au groupe audio (défaut Pi OS).
+User=pi
+# L'orchestrateur se lance en module (python -m device.orchestrator) avec des
+# imports relatifs → le cwd DOIT être la racine du dépôt sur le Pi (miroir,
+# layout raspberry/).
+WorkingDirectory=/home/pi/aura/raspberry
+# « - » : ne pas échouer si le fichier n'existe pas encore — il est créé par
+# aura-firstboot au tout premier boot d'un clone de l'image golden. Ceinture et
+# bretelles : device/config.py recharge lui-même ~/.aura/env à l'import ;
+# EnvironmentFile rend simplement les variables visibles AUSSI du ExecStartPre.
+EnvironmentFile=-/home/pi/.aura/env
+# ── Contournement warm-reboot du XVF3800 (bug #20) ───────────────────────────
+# Après un reboot LOGICIEL du Pi, l'array ré-énumère normalement (arecord -l OK)
+# mais la capture devient un bourdonnement inintelligible : l'AEC matérielle ne
+# se recalibre pas car VBUS n'est jamais retombé. Workaround officiel
+# Seeed/Pollen Robotics : « xvf_host REBOOT 1 » à CHAQUE démarrage — idempotent,
+# inoffensif au cold boot (l'array y est saine). Le device quitte le bus ~0,5 s
+# et ré-énumère à une NOUVELLE adresse USB → sleep 8 (5-8 s recommandés) AVANT
+# d'ouvrir la capture. « || true » : binaire absent ou array débranchée ne
+# doivent JAMAIS empêcher Aura de démarrer (micro USB de secours, banc de dev).
+# Détails : docs/hardware/respeaker-xvf3800.md §7 + manuel de référence §4/§5.4.
+ExecStartPre=/bin/bash -c '/home/pi/reSpeaker_XVF3800_USB_4MIC_ARRAY/host_control/rpi_64bit/xvf_host REBOOT 1 && sleep 8 || true'
+ExecStart=/home/pi/aura/raspberry/device/venv/bin/python -m device.orchestrator
+# always (et pas on-failure) : même un exit 0 inattendu doit relancer
+# l'enceinte — un assistant vocal ne « se termine » jamais légitimement.
+# RestartSec=5 : assez court pour que l'utilisateur ne perçoive qu'un hoquet,
+# assez long pour ne pas marteler le bus USB si l'array est en vrac.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

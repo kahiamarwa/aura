@@ -1,0 +1,21 @@
+# Déclencheur quotidien de la MAJ de flotte (aura-update.service).
+# Installation : voir l'en-tête d'aura-update.service —
+#   sudo systemctl enable --now aura-update.timer
+[Unit]
+Description=Aura - MAJ quotidienne (03h00 ± 30 min)
+
+[Timer]
+# 03h00 : personne ne parle à son enceinte à cette heure-là — le restart
+# d'aura.service passe inaperçu.
+OnCalendar=*-*-* 03:00:00
+# Étale les MAJ de la flotte sur 30 min : évite que des dizaines d'enceintes
+# tirent le dépôt git au même instant (thundering herd) et que toutes
+# redémarrent en même temps (un tag cassé se détecte sur les premières,
+# le rollback protège les autres… si elles ne partent pas toutes ensemble).
+RandomizedDelaySec=1800
+# Enceinte éteinte à 03h00 (coupure secteur la nuit chez certains clients) →
+# la MAJ manquée est rattrapée au boot suivant au lieu d'attendre 24 h.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
