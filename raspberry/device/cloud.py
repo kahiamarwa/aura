@@ -131,6 +131,13 @@ def _headers() -> dict:
     h = {}
     if config.DEVICE_TOKEN:
         h["X-Device-Token"] = config.DEVICE_TOKEN
+        # PAS d'Authorization en plus : le DEVICE_TOKEN est l'identité UNIQUE
+        # de l'enceinte. Terrain 28/07 : un vieux jeton de session (héritage
+        # pré-appairage) partait en Bearer et servait d'identité de secours au
+        # backend — une enceinte remise en stock continuait de vivre
+        # « associée » (STT ambiant actif). Le Bearer ne sert qu'en mode dev
+        # SANS device token.
+        return h
     tok = get_access_token()
     if tok:
         h["Authorization"] = f"Bearer {tok}"
