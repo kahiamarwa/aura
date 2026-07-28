@@ -215,7 +215,7 @@ def get_control() -> dict | None:
             d = r.json()
             return {"muted": bool(d.get("muted")), "enroll_request": d.get("enroll_request"),
                     "unclaimed": bool(d.get("unclaimed")), "command": d.get("command"),
-                    "channel": d.get("channel")}
+                    "channel": d.get("channel"), "announce_now": bool(d.get("announce_now"))}
     except Exception:
         pass
     return None

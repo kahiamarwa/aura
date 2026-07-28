@@ -165,6 +165,9 @@ class Orchestrator:
                 # (annonce vocale du code) au lieu du pipeline normal.
                 if ctrl.get("unclaimed"):
                     self._unclaimed.set()
+                    if ctrl.get("announce_now"):
+                        # Bouton web « répéter / nouveau code » → annonce immédiate
+                        self._last_claim_announce = None
                 else:
                     if self._unclaimed.is_set():
                         self._just_claimed = True    # transition stock→claimed : accueil
