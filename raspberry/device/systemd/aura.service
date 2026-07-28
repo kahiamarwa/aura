@@ -40,6 +40,10 @@ EnvironmentFile=-/home/pi/.aura/env
 # doivent JAMAIS empêcher Aura de démarrer (micro USB de secours, banc de dev).
 # Détails : docs/hardware/respeaker-xvf3800.md §7 + manuel de référence §4/§5.4.
 ExecStartPre=/bin/bash -c '/home/pi/reSpeaker_XVF3800_USB_4MIC_ARRAY/host_control/rpi_64bit/xvf_host REBOOT 1 && sleep 8 || true'
+# Volume de sortie à 100 % APRÈS le REBOOT ci-dessus (qui ré-énumère l'array et
+# remet le volume au défaut bas — alsactl store ne suffit pas). AUDIO_OUTPUT_VOLUME
+# surchargeable dans ~/.aura/env. « - » : un échec ne bloque pas le démarrage.
+ExecStartPre=-/bin/bash /home/pi/aura/raspberry/device/tools/set_output_volume.sh ${AUDIO_OUTPUT_VOLUME}
 ExecStart=/home/pi/aura/raspberry/device/venv/bin/python -m device.orchestrator
 # always (et pas on-failure) : même un exit 0 inattendu doit relancer
 # l'enceinte — un assistant vocal ne « se termine » jamais légitimement.
