@@ -11,13 +11,16 @@ set -u
 CARD="${AUDIO_CARD:-Array}"
 VOL="${1:-100}"
 
-# Contrôles de sortie candidats du XVF3800 USB — le 1er présent est réglé.
-for ctrl in "PCM" "Speaker" "Master" "Headphone" "Playback"; do
-  if amixer -c "$CARD" sget "$ctrl" >/dev/null 2>&1; then
-    amixer -c "$CARD" sset "$ctrl" "${VOL}%" unmute >/dev/null 2>&1 \
-      && echo "[volume] $ctrl → ${VOL}% (carte $CARD)" \
-      && exit 0
-  fi
+# Contrôles de sortie du XVF3800 USB — TOUS ceux présents sont réglés, aux
+# deux index (terrain 28/07 : la carte expose PCM,0/PCM,1 + Headset,0/Headset,1).
+found=0
+for ctrl in "PCM" "Headset" "Speaker" "Master" "Headphone" "Playback"; do
+  for idx in "" ",1"; do
+    if amixer -c "$CARD" sget "${ctrl}${idx}" >/dev/null 2>&1; then
+      amixer -c "$CARD" sset "${ctrl}${idx}" "${VOL}%" unmute >/dev/null 2>&1 \
+        && echo "[volume] ${ctrl}${idx} → ${VOL}% (carte $CARD)" && found=1
+    fi
+  done
 done
-echo "[volume] aucun contrôle de sortie connu sur la carte $CARD (ignoré)" >&2
+[ "$found" = 1 ] || echo "[volume] aucun contrôle de sortie connu sur $CARD (ignoré)" >&2
 exit 0   # ne JAMAIS bloquer le démarrage d'Aura sur un réglage de volume
