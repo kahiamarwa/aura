@@ -145,7 +145,18 @@ def _register(backend: str, device_token: str, serial: str) -> bool | str:
     url = backend.rstrip("/") + REGISTER_PATH
     payload = json.dumps({"device_token": device_token, "serial": serial}).encode()
     headers = {"Content-Type": "application/json"}
+    # Secret d'usine : env d'abord, sinon /etc/aura/factory.env — ce fichier
+    # système SURVIT à la purge de ~/.aura (anonymisation de l'image golden),
+    # contrairement à ~/.aura/env. Sans lui, le register renverrait 401.
     secret = os.environ.get("FACTORY_REGISTER_SECRET", "")
+    if not secret:
+        try:
+            for line in Path("/etc/aura/factory.env").read_text().splitlines():
+                if line.startswith("FACTORY_REGISTER_SECRET="):
+                    secret = line.split("=", 1)[1].strip()
+                    break
+        except Exception:
+            pass
     if secret:
         headers["X-Factory-Secret"] = secret
     for attempt in range(1, RETRIES + 1):

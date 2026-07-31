@@ -22,6 +22,11 @@ Before=aura.service
 Type=oneshot
 # pi : l'identité vit dans /home/pi/.aura — aucun privilège nécessaire.
 User=pi
+# Secret d'usine partagé (X-Factory-Secret pour /register). Le « - » rend le
+# fichier optionnel : absent → le register échoue proprement en 401 et on
+# réessaie. Ce fichier vit dans /etc/aura (système) et SURVIT à la purge de
+# ~/.aura faite lors de l'anonymisation de l'image golden.
+EnvironmentFile=-/etc/aura/factory.env
 # python3 SYSTÈME (stdlib uniquement) : l'identité doit se créer même si le
 # venv de l'orchestrateur est cassé.
 ExecStart=/usr/bin/python3 /home/pi/aura/raspberry/device/tools/firstboot_identity.py
