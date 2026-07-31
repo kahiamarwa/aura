@@ -22,6 +22,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 import urllib.request
